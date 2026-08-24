@@ -1,0 +1,157 @@
+# sakanner lab -- Docker Compose profile.
+#
+# NOT the primary way this lab is verified: Docker is not installed on
+# the machine this profile was authored on, so this file has been syntax
+# -validated (docker compose is a strict YAML+schema; see
+# docs/phase-2-test-lab.md for how it was checked without Docker itself)
+# but has NOT been exercised with `docker compose up`. Its DNS component
+# (dns/dnsmasq.conf) WAS live-verified directly with the real dnsmasq
+# binary and Go's own net.Resolver, outside Docker -- see that file's
+# comments and docs/phase-2-test-lab.md "Known limitations" for what was
+# found and fixed there.
+#
+# The Go-native harness (lab/harness.go, driven by `go test
+# ./lab/...` or `make lab-up`) is what this lab's acceptance
+# criteria were actually verified against. Use this profile if you want
+# real nginx/Apache Server-header fingerprinting fidelity, or a
+# genuinely separate-process DNS server driving the real `scanner`
+# binary end to end; otherwise the Go-native harness is sufficient and
+# already proven to work.
+#
+# Usage once Docker is available:
+#   docker compose -f lab/docker-compose.yml up -d
+#   docker compose -f lab/docker-compose.yml down -v
+
+services:
+  dns:
+    image: 4km3/dnsmasq:2.90-r3
+    cap_add: [NET_ADMIN]
+    ports:
+      - "127.0.0.1:15353:53/udp"
+      - "127.0.0.1:15353:53/tcp"
+    volumes:
+      - ./dns/dnsmasq.conf:/etc/dnsmasq.conf:ro
+    command: ["--conf-file=/etc/dnsmasq.conf", "--no-daemon"]
+
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./fixtures:/usr/share/nginx/lab:ro
+
+  apache:
+    image: httpd:2.4-alpine
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - ./apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./fixtures:/usr/local/apache2/htdocs:ro
+
+  static:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8086:80"
+    volumes:
+      - ./fixtures:/fixtures:ro
+    working_dir: /fixtures
+    # No Server header at all -- matches harness.go's staticHandler
+    # (deliberate negative fingerprinting case).
+    command: ["python3", "-m", "http.server", "80"]
+
+  api:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - ./apps/api/api.py:/app/api.py:ro
+      - ./fixtures:/fixtures:ro
+    command: ["python3", "/app/api.py"]
+
+  redirect-http:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8083:80"
+    environment:
+      LAB_REDIRECT_HTTPS_PORT: "8444"
+    volumes:
+      - ./apps/redirect/redirect.py:/app/redirect.py:ro
+    command: ["python3", "/app/redirect.py"]
+
+  # Simplification, documented: this profile does not terminate real TLS
+  # for the "https" port (unlike the Go-native harness, which uses a real
+  # self-signed cert via httptest.NewTLSServer) -- it's the same
+  # redirect.py app again, on a second published port, still plaintext.
+  # HTTPS/TLS-capture coverage is exercised by the Go-native harness;
+  # this profile's redirect scenario coverage is HTTP-only. See "Known
+  # limitations".
+  redirect-https:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8444:80"
+    environment:
+      LAB_REDIRECT_HTTPS_PORT: "8444"
+    volumes:
+      - ./apps/redirect/redirect.py:/app/redirect.py:ro
+    command: ["python3", "/app/redirect.py"]
+
+  jsapp:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8084:80"
+    volumes:
+      - ./apps/jsapp/jsapp.py:/app/jsapp.py:ro
+      - ./fixtures:/fixtures:ro
+    command: ["python3", "/app/jsapp.py"]
+
+  slow:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8085:80"
+    volumes:
+      - ./apps/slow/slow.py:/app/slow.py:ro
+    command: ["python3", "/app/slow.py"]
+
+  altport:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8099:80"
+    volumes:
+      - ./fixtures:/fixtures:ro
+    working_dir: /fixtures
+    command: ["python3", "-m", "http.server", "80"]
+
+  # refuse.scanner.test has no service at all, deliberately -- there is
+  # no "refuse" entry in this file. See ground-truth.yaml.
+
+  # --- Phase 3 Security Test Laboratory (see docs/phase-3-test-lab.md) ---
+  #
+  # Mirrors lab/harness_vuln.go's fixture pairs. Same "documented,
+  # not execution-verified with Docker" status as every other service in
+  # this file -- the Go-native harness (`make lab-test-phase3`) is what
+  # Phase 3's acceptance criteria were actually verified against.
+  #
+  # ssrf-internal is on the SAME docker-compose network as vuln and
+  # nothing else -- it has no published port, so it is reachable only
+  # from other containers in this compose project (mirrors the Go
+  # harness's ipSSRFInternal being a private 127.0.0.x loopback address
+  # never exposed outside the lab process). vuln's own SSRF fixture is
+  # still hard-restricted to loopback-shaped destinations in application
+  # code (vuln_app.py), same as the Go harness -- the network boundary
+  # here is defense in depth, not the only control.
+  ssrf-internal:
+    image: python:3-alpine
+    volumes:
+      - ./apps/vulnerable/vuln_app.py:/app/vuln_app.py:ro
+    command: ["python3", "-c", "from http.server import *; H=type('H',(BaseHTTPRequestHandler,),{'do_GET':lambda s:(s.send_response(200),s.send_header('Content-Type','text/plain'),s.end_headers(),s.wfile.write(b'internal-only fixture service, reachable only from inside the lab network'))}); ThreadingHTTPServer(('0.0.0.0',80),H).serve_forever()"]
+
+  vuln:
+    image: python:3-alpine
+    ports:
+      - "127.0.0.1:8087:80"
+    volumes:
+      - ./apps/vulnerable/vuln_app.py:/app/vuln_app.py:ro
+    command: ["python3", "/app/vuln_app.py"]
+    depends_on:
+      - ssrf-internal

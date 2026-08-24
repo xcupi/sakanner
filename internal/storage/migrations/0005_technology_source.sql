@@ -1,0 +1,1 @@
+ALTER TABLE technologies ADD COLUMN source TEXT NOT NULL DEFAULT '';

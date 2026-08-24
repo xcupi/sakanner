@@ -1,0 +1,75 @@
+# Example sakanner configuration. Copy this file, edit as needed, and
+# pass it with `scanner --config path/to/config.yaml`.
+#
+# Every value here can also be set via an environment variable, e.g.
+# storage.dsn -> SAKANNER_STORAGE_DSN. Values not set here (or via env)
+# fall back to sakanner's built-in defaults.
+
+storage:
+  driver: sqlite
+  dsn: sakanner.db
+
+logging:
+  level: info    # debug, info, warn, error
+  format: text   # text, json
+
+scope:
+  # Reserved IP ranges (loopback, link-local, cloud metadata, multicast,
+  # unspecified) are denied by default regardless of scope rules. Only
+  # enable this if you specifically need to scan such an address AND have
+  # an explicit scope rule for it -- it is dangerous otherwise.
+  allow_reserved_ranges: false
+
+concurrency:
+  dns_workers: 10
+  port_workers: 20
+  http_workers: 10
+
+rate_limit:
+  ports_per_second: 50
+  http_per_second: 10
+
+dns:
+  timeout: 5s
+  # enumerate_records additionally looks up CNAME/MX/TXT/NS for every
+  # discovered asset. Enabled by default; disable for very large
+  # subdomain enumerations where the extra DNS traffic matters.
+  enumerate_records: true
+
+ports:
+  dial_timeout: 3s
+  # default_ports: [21, 22, 23, 25, 53, 80, 110, ...]  # uncomment to override
+
+http:
+  timeout: 10s
+  max_redirects: 5
+
+discovery:
+  # wordlist: [www, mail, api, ...]  # uncomment to override the built-in list
+
+crawler:
+  # Crawling is comparatively invasive/slow (many extra requests per
+  # service), so it's off by default.
+  enabled: false
+  max_depth: 2
+  max_pages: 20
+
+tools:
+  # Each pluggable stage can use sakanner's own built-in implementation
+  # or delegate to a matching external tool from the ProjectDiscovery
+  # ecosystem, if it's installed. Valid values per key: "native" (always
+  # built-in), "auto" (use the tool if found on PATH, else native -- the
+  # default), or the tool's own name (require it explicitly; sakanner
+  # fails fast with an install hint if it's missing). Run
+  # `scanner tools status` to see what's currently detected.
+  #
+  # subfinder and dnsx only enumerate names -- sakanner still resolves
+  # and scope-validates every result the normal way. naabu, httpx, and
+  # katana dial the target directly from their own process, which is
+  # outside sakanner's own per-dial scope re-validation; a WARN is
+  # logged whenever one of those three is actually selected.
+  subfinder: auto  # subdomain discovery
+  dnsx: auto       # DNS record enumeration
+  naabu: auto      # port scanning
+  httpx: auto      # HTTP probing
+  katana: auto     # crawling

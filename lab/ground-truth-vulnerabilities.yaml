@@ -1,0 +1,976 @@
+# Ground truth for sakanner's Phase 3 Security Test Laboratory.
+#
+# This is the single source of truth for every intentionally vulnerable
+# (and every deliberately safe) fixture in lab/harness_vuln.go.
+# Every finding here is a REAL, verifiable behavior of a real (if
+# synthetic) HTTP fixture -- confirmed by directly exercising each one
+# before this file was written, not assumed. See docs/phase-3-test-lab.md
+# for the full narrative.
+#
+# IMPORTANT: this file does not imply a Phase 3 detector exists yet. It
+# does not. This file defines what a FUTURE detector should find, so
+# that once one exists, "expected vs actual" comparison is possible
+# without inventing new ground truth at that point. See
+# lab/comparison.go and lab/phase3_lab_test.go for how this
+# is consumed today (against zero actual findings, correctly).
+#
+# Schema notes:
+#   - severity uses pkg/models.Severity's existing five-value scale
+#     (info, low, medium, high, critical) -- Phase 2 already established
+#     this model (see pkg/models.go's Finding/Severity types, populated
+#     since Phase 1 planning but never written to until a detector
+#     exists); this file does not invent a new one.
+#   - vulnerability_type is a free-text label intended to become
+#     Finding.VulnerabilityType verbatim.
+#   - detector_category names the FUTURE Phase 3 detector expected to
+#     find this -- purely documentation until Phase 3 exists.
+#   - requires_capability notes when detection needs pipeline
+#     functionality Phase 2 doesn't have yet (e.g. authenticated
+#     multi-step probing) -- these are still real, valid fixtures; they
+#     just can't be detected until that capability is built, which this
+#     file records honestly rather than silently.
+
+host: vuln.scanner.test
+internal_host: ssrf-internal.scanner.test # SSRF-reachable only; never a scan Target, never scoped
+
+findings:
+  # --- 1. Reflected XSS ---------------------------------------------------
+  - id: VULN-XSS-REFLECTED-001
+    type: reflected_xss
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/vulnerable
+    method: GET
+    parameter: q
+    severity: high
+    severity_rationale: "unauthenticated, no user interaction beyond a crafted link, can execute arbitrary script in a victim's session"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: reflected-xss-detector
+    expected_evidence:
+      probe_payload: "<script>sakannerXSSPROBE</script>"
+      response_contains: "<script>sakannerXSSPROBE</script>"
+      description: "the q parameter value is echoed into the HTML body without encoding"
+    expected_behavior: "GET /xss/reflected/vulnerable?q=<payload> returns 200 with the payload reflected verbatim, unescaped, in the response body"
+  - id: VULN-XSS-REFLECTED-NEG-001
+    type: reflected_xss
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/safe
+    method: GET
+    parameter: q
+    expected_result: no_vulnerability
+    expected_behavior: "GET /xss/reflected/safe?q=<payload> HTML-entity-encodes the value before embedding it (<script> becomes &lt;script&gt;)"
+
+  # Phase 3.2 additions: a second reflection CONTEXT (HTML attribute,
+  # not just HTML text), plus two distinct "must not be a finding"
+  # negative shapes beyond simple encoding -- see
+  # internal/detectors/xssreflected and docs/phase-3-2-reflected-xss.md.
+  - id: VULN-XSS-REFLECTED-ATTR-001
+    type: reflected_xss
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/attribute/vulnerable
+    method: GET
+    parameter: name
+    severity: high
+    severity_rationale: "same impact as the text-context case (arbitrary script execution in a victim's session) -- only the injection point differs, not the consequence"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: reflected-xss-detector
+    expected_evidence:
+      probe_payload: "<sakannerXSSPROBE>\"'"
+      response_contains: "<sakannerXSSPROBE>\"'"
+      description: "the name parameter value is echoed unescaped inside an HTML attribute (value=\"...\"), so a double-quote in the input breaks out of the attribute"
+    expected_behavior: "GET /xss/reflected/attribute/vulnerable?name=<payload> returns 200 with the payload reflected verbatim, unescaped, inside the input element's value attribute"
+  - id: VULN-XSS-REFLECTED-ATTR-NEG-001
+    type: reflected_xss
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/attribute/safe
+    method: GET
+    parameter: name
+    expected_result: no_vulnerability
+    expected_behavior: "GET /xss/reflected/attribute/safe?name=<payload> HTML-attribute-encodes the value before embedding it (the double-quote becomes &#34;, cannot break out of the attribute)"
+  - id: VULN-XSS-REFLECTED-UNRELATED-NEG-001
+    type: reflected_xss
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/unrelated
+    method: GET
+    parameter: q
+    expected_result: no_vulnerability
+    expected_behavior: "GET /xss/reflected/unrelated?q=<anything> returns a fixed page that never echoes q anywhere -- the parameter exists but is not reflected at all, a distinct negative shape from safe encoding"
+  - id: VULN-XSS-REFLECTED-DECOY-NEG-001
+    type: reflected_xss
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /xss/reflected/static-decoy
+    method: GET
+    parameter: q
+    expected_result: no_vulnerability
+    expected_behavior: "GET /xss/reflected/static-decoy?q=<anything> returns a fixed page whose STATIC markup already contains XSS-payload-shaped text (a documentation example, always present, unrelated to q) -- a detector that searches for payload-shaped strings anywhere in the page rather than correlating its OWN probe marker would false-positive here"
+
+  # --- 2. Stored XSS -------------------------------------------------------
+  - id: VULN-XSS-STORED-001
+    type: stored_xss
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /xss/stored/vulnerable
+    method: POST
+    parameter: comment
+    severity: critical
+    severity_rationale: "persists across requests and victims (any later visitor executes it), no interaction needed beyond viewing the page"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: stored-xss-detector
+    requires_capability: "multi-step probing (POST a payload, then a separate GET to observe it) -- Phase 2's pipeline has no such capability yet"
+    expected_evidence:
+      probe_payload: "<script>sakannerXSSPROBE</script>"
+      response_contains: "<script>sakannerXSSPROBE</script>"
+      description: "a POSTed comment is echoed back unescaped on every subsequent GET, not just the response to the POST itself"
+    expected_behavior: "POST comment=<payload> to /xss/stored/vulnerable, then GET the same URL: the payload appears verbatim, unescaped, in the div#comment element"
+  - id: VULN-XSS-STORED-NEG-001
+    type: stored_xss
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /xss/stored/safe
+    method: POST
+    parameter: comment
+    expected_result: no_vulnerability
+    expected_behavior: "the same POST-then-GET sequence against /xss/stored/safe returns the payload HTML-encoded"
+
+  # --- 3. SQL injection ------------------------------------------------------
+  - id: VULN-SQLI-001
+    type: sql_injection
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /sqli/vulnerable
+    method: GET
+    parameter: id
+    severity: critical
+    severity_rationale: "boolean-based tautology returns every row regardless of the caller's authorization; error-based variant discloses backend detail"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: sql-injection-detector
+    expected_evidence:
+      probe_payload: "' OR '1'='1"
+      response_contains: "alice, bob, admin"
+      description: "a tautology payload returns all synthetic rows instead of the single row a literal id would match; a bare quote alone triggers a synthetic 'SQL syntax error' response, an error-based SQLi signature"
+    expected_behavior: "GET /sqli/vulnerable?id=' OR '1'='1 returns 200 with all three fixture rows (boolean-based); GET /sqli/vulnerable?id=' returns 500 with a database-error-shaped message (error-based)"
+  - id: VULN-SQLI-NEG-001
+    type: sql_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /sqli/safe
+    method: GET
+    parameter: id
+    expected_result: no_vulnerability
+    expected_behavior: "the same tautology payload against /sqli/safe returns 'results: (none)' -- the parameter is always treated as an opaque, parameterized value, quotes have no special meaning"
+
+  # Phase 3.3 additions: a pure boolean-differential fixture with NO
+  # error text ever surfacing (proving the detector's boolean signal
+  # works independently of its error-based one), plus two additional
+  # "must not be a finding" negative shapes beyond simple
+  # parameterization -- see internal/detectors/sqli and
+  # docs/phase-3-3-sqli.md.
+  - id: VULN-SQLI-BOOLEAN-001
+    type: sql_injection
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /sqli/boolean/vulnerable
+    method: GET
+    parameter: id
+    severity: critical
+    severity_rationale: "same impact as the error-surfacing case (a boolean-based tautology returns every row regardless of authorization) -- the only difference is that this fixture never leaks a raw database error, so error-text detection alone would miss it entirely"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: sql-injection-detector
+    expected_evidence:
+      probe_payload: "1' OR '1'='1 (true) vs 1' AND '1'='2 (false)"
+      response_contains: "alice, bob, admin (true) vs (none) (false)"
+      description: "a true-condition tautology returns all synthetic rows while a false-condition contradiction returns none, and no error is ever surfaced by either -- only a true/false differential comparison against a baseline reveals this"
+    expected_behavior: "GET /sqli/boolean/vulnerable?id=1' OR '1'='1 returns 200 with all three fixture rows; GET /sqli/boolean/vulnerable?id=1' AND '1'='2 returns 200 with 'results: (none)'; GET /sqli/boolean/vulnerable?id=' (bare quote) also returns 200 with 'results: (none)', never a database error"
+  - id: VULN-SQLI-BOOLEAN-NEG-001
+    type: sql_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /sqli/boolean/safe
+    method: GET
+    parameter: id
+    expected_result: no_vulnerability
+    expected_behavior: "both the true- and false-condition payloads against /sqli/boolean/safe return the identical 'results: (none)' -- the parameter is always treated as an opaque, parameterized value"
+  - id: VULN-SQLI-GENERIC-ERROR-NEG-001
+    type: sql_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /sqli/generic-error
+    method: GET
+    parameter: id
+    expected_result: no_vulnerability
+    expected_behavior: "GET /sqli/generic-error always returns 500 with the IDENTICAL database-error-shaped text (\"Database error: ...\") regardless of input -- including a plain baseline request -- deliberately so that error-text matching ALONE would false-positive; a detector must correlate a probe's error against baseline behavior first and recognize nothing changed"
+  - id: VULN-SQLI-DYNAMIC-NEG-001
+    type: sql_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /sqli/dynamic
+    method: GET
+    parameter: id
+    expected_result: no_vulnerability
+    expected_behavior: "GET /sqli/dynamic always returns 'results: (none)' plus a monotonically-increasing request counter formatted to look like a timestamp/request-id -- the RAW response differs on every single request regardless of the parameter, exercising response normalization: a detector that doesn't normalize away the counter before comparing would false-positive on ordinary request-to-request variance"
+
+  # --- 4. Authentication weakness --------------------------------------------
+  - id: VULN-AUTH-WEAK-001
+    type: authentication_weakness
+    vulnerability_class: broken_authentication
+    host: vuln.scanner.test
+    endpoint: /auth/weak-credentials
+    method: GET
+    parameter: password
+    severity: high
+    severity_rationale: "a single well-known default credential pair grants full login; trivially automatable"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: default-credentials-detector
+    expected_evidence:
+      probe_payload: "username=admin&password=admin"
+      response_contains: "login successful"
+      description: "the synthetic default credential pair admin/admin (fixture-only, not a real account anywhere) is accepted"
+    expected_behavior: "GET /auth/weak-credentials?username=admin&password=admin returns 200 'login successful: welcome admin'; any other pair returns 401"
+  - id: VULN-AUTH-WEAK-NEG-001
+    type: authentication_weakness
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /auth/strong-credentials
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /auth/strong-credentials?username=admin&password=admin (the same default pair) returns 401 -- only a long, synthetic, fixture-only credential pair succeeds"
+
+  # --- 5. Authorization / IDOR -----------------------------------------------
+  - id: VULN-IDOR-001
+    type: idor
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /idor/vulnerable/user/{id}
+    method: GET
+    parameter: id
+    severity: high
+    severity_rationale: "any authenticated session can read any other synthetic user's record by changing the id path segment -- horizontal privilege escalation"
+    authentication_required: true
+    automatically_detectable: true
+    detector_category: idor-detector
+    requires_capability: "PATH-segment object identifier extraction -- Phase 3.5 (internal/detectors/idor) added authenticated differential probing, but Phase 3.1's target-selection model (internal/detection.BuildTargets) still only extracts candidate parameters from QUERY strings, not path segments, so this fixture's {id} remains undetectable. See VULN-IDOR-API-001 for the equivalent, actually-detectable query-parameter-based fixture."
+    expected_evidence:
+      description: "GET /idor/vulnerable/user/2 with a session cookie for user 1 (Cookie: session=user1) still returns user 2's full record"
+      response_contains: "\"id\":\"2\""
+    expected_behavior: "the endpoint returns the requested user's record regardless of which session cookie (if any) was presented"
+  - id: VULN-IDOR-NEG-001
+    type: idor
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /idor/safe/user/{id}
+    method: GET
+    authentication_required: true
+    expected_result: no_vulnerability
+    expected_behavior: "GET /idor/safe/user/2 with Cookie: session=user1 returns 403; only Cookie: session=user2 succeeds"
+
+  # Phase 3.5 addition: a QUERY-PARAMETER-based IDOR/BOLA fixture pair --
+  # see internal/detectors/idor and docs/phase-3-5-idor-bola.md. Unlike
+  # VULN-IDOR-001/NEG-001 above (path-based, still undetectable -- see
+  # that entry's requires_capability), this one's resource_id is a
+  # query parameter, matching Phase 3.1's existing target-selection
+  # model exactly, so it's what internal/detectors/idor is actually
+  # verified against. Ownership: resource-a belongs to user-a,
+  # resource-b belongs to user-b (see lab/harness_vuln.go's
+  # idorAPIResources) -- authorization contexts are the synthetic
+  # X-Test-Auth-User header, never a real authentication scheme.
+  - id: VULN-IDOR-API-001
+    type: idor
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /idor/api/resource/vulnerable
+    method: GET
+    parameter: resource_id
+    severity: critical
+    severity_rationale: "any authorization context can read any other synthetic user's full resource by changing the resource_id query parameter -- horizontal authorization failure with no ownership check at all"
+    authentication_required: true
+    automatically_detectable: true
+    detector_category: idor-detector
+    expected_evidence:
+      description: "GET /idor/api/resource/vulnerable?resource_id=resource-a with X-Test-Auth-User: user-b (not the owner) still returns resource-a's full content, byte-identical to what user-a (the real owner) receives"
+      response_contains: "RESOURCE_A_SECRET_MARKER"
+    expected_behavior: "the endpoint returns the requested resource regardless of which X-Test-Auth-User identity (if any) was presented"
+  - id: VULN-IDOR-API-NEG-001
+    type: idor
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /idor/api/resource/safe
+    method: GET
+    parameter: resource_id
+    authentication_required: true
+    expected_result: no_vulnerability
+    expected_behavior: "GET /idor/api/resource/safe?resource_id=resource-a with X-Test-Auth-User: user-b returns 403; only X-Test-Auth-User: user-a succeeds"
+  - id: VULN-IDOR-API-PUBLIC-NEG-001
+    type: idor
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /idor/api/resource/safe
+    method: GET
+    parameter: resource_id
+    expected_result: no_vulnerability
+    expected_behavior: "GET /idor/api/resource/safe?resource_id=resource-public succeeds for any caller -- an intentionally public resource, not owned by any synthetic user, is never flagged since no authorization context claims ownership of it"
+  - id: VULN-IDOR-API-INVALID-NEG-001
+    type: idor
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /idor/api/resource/safe
+    method: GET
+    parameter: resource_id
+    expected_result: no_vulnerability
+    expected_behavior: "GET /idor/api/resource/safe?resource_id=does-not-exist returns 404 for every caller -- an invalid identifier is never flagged"
+  - id: VULN-IDOR-API-GENERIC-NEG-001
+    type: idor
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /idor/api/resource/generic
+    method: GET
+    parameter: resource_id
+    expected_result: no_vulnerability
+    expected_behavior: "GET /idor/api/resource/generic?resource_id=<any> always returns the identical '{\"status\":\"ok\"}' regardless of resource_id or caller -- the response never reflects a specific resource, so it can never be trusted as protected-resource evidence even though it's a 200"
+
+  # --- 6. Path traversal -----------------------------------------------------
+  - id: VULN-TRAVERSAL-001
+    type: path_traversal
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /files/traversal/vulnerable
+    method: GET
+    parameter: name
+    severity: high
+    severity_rationale: "traversal-shaped input reaches the resource lookup with no containment check (synthetic in-memory fixture -- see docs/phase-3-test-lab.md for why no real file is ever read)"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: path-traversal-detector
+    requires_capability: "parameter-name heuristic mismatch -- Phase 3.6 (internal/detectors/traversal) requires the candidate's QUERY PARAMETER NAME to match its object-reference heuristic (file, filename, filepath, path, file_path, document, document_path, template, resource, download, attachment, image, directory); this fixture's parameter is named \"name\", which isn't in that list, so it remains out of reach of the real detector. See VULN-TRAVERSAL-API-001 for the equivalent, actually-detectable fixture (parameter \"file\")."
+    expected_evidence:
+      probe_payload: "../../../etc/passwd"
+      response_contains: "sakanner-lab-synthetic-fixture-file"
+      description: "a traversal-shaped name parameter returns fixture content keyed exactly to that traversal string, proving no path sanitization occurred"
+    expected_behavior: "GET /files/traversal/vulnerable?name=../../../etc/passwd returns 200 with synthetic fixture content; a real target's equivalent bug would return real file content instead"
+  - id: VULN-TRAVERSAL-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/traversal/safe
+    method: GET
+    parameter: name
+    expected_result: no_vulnerability
+    expected_behavior: "the same traversal-shaped name against /files/traversal/safe returns 404 -- only an allowlisted literal filename succeeds"
+
+  # Phase 3.6 addition: a QUERY-PARAMETER-based path traversal / LFI
+  # fixture family under /files/download/* -- see internal/detectors/traversal
+  # and docs/phase-3-6-path-traversal.md. Ground truth (task section 4):
+  # allowed root is "public/", the protected resource is
+  # "protected/secret-marker.txt" (content: the literal string
+  # PATH_TRAVERSAL_SECRET_MARKER, never a real secret), and
+  # "public/index.html"/"public/public-marker.txt" (content:
+  # PUBLIC_FILE_MARKER) are the legitimate, intended-to-be-reachable
+  # resources. Unlike VULN-TRAVERSAL-001 above (parameter "name", out of
+  # this detector's heuristic reach), this fixture family's parameter is
+  # "file", matching the heuristic exactly.
+  - id: VULN-TRAVERSAL-API-001
+    type: path_traversal
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /files/download/vulnerable
+    method: GET
+    parameter: file
+    severity: critical
+    severity_rationale: "unsanitized file parameter reaches a path-join+lookup with no containment check, allowing any caller to escape the allowed public/ root and read protected/secret-marker.txt (synthetic content only -- see docs/phase-3-test-lab.md); the real detector reports this at critical severity once the protected-resource marker is confirmed in the response (its HIGH-confidence tier), matching VULN-IDOR-API-001 and VULN-SSRF-001's precedent"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: path-traversal-detector
+    expected_evidence:
+      probe_payload: "../protected/secret-marker.txt"
+      response_contains: "PATH_TRAVERSAL_SECRET_MARKER"
+      description: "a traversal-shaped file parameter escapes the allowed public/ root and returns the protected synthetic file's content verbatim, proving no containment check occurred"
+    expected_behavior: "GET /files/download/vulnerable?file=../protected/secret-marker.txt (and its URL-encoded / mixed-encoding equivalents) returns 200 with PATH_TRAVERSAL_SECRET_MARKER; GET ?file=index.html returns 200 with PUBLIC_FILE_MARKER, the legitimate access pattern"
+  - id: VULN-TRAVERSAL-API-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/safe
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/safe?file=../protected/secret-marker.txt returns 403 -- the resolved, cleaned path is verified to still be contained within public/ before use, proper canonicalization + containment (not a substring blocklist)"
+  - id: VULN-TRAVERSAL-API-SANITIZED-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/sanitized
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/sanitized?file=../protected/secret-marker.txt returns 403 -- a decoded-value blocklist rejects any \"..\" sequence outright, before any path construction; effective against this detector's own deterministic probe set (see docs/phase-3-6-path-traversal.md for why this isn't claimed as a universally unbeatable filter)"
+  - id: VULN-TRAVERSAL-API-BYID-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/by-id
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/by-id?file=../protected/secret-marker.txt returns 404 -- the parameter is only ever used as an opaque allowlist key (1, 2, ...), never concatenated into a path, so a traversal-shaped value is simply not a valid key"
+  - id: VULN-TRAVERSAL-API-REFLECT-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/reflect
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/reflect?file=../protected/secret-marker.txt returns 200 with body \"Requested file: ../protected/secret-marker.txt\" -- the traversal string is echoed back, but no file of any kind was ever read; PATH_TRAVERSAL_SECRET_MARKER never appears"
+  - id: VULN-TRAVERSAL-API-GENERIC-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/generic
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/generic?file=<any> always returns the identical '{\"status\":\"ok\"}' regardless of file or traversal representation -- never reflects a specific resource, so it can never be trusted as protected-resource evidence even though it's a 200"
+  - id: VULN-TRAVERSAL-API-INVALID-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/safe
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/safe?file=does-not-exist.txt returns 404 for a syntactically valid but nonexistent path -- an invalid identifier is never flagged"
+  - id: VULN-TRAVERSAL-API-PUBLICTEXT-NEG-001
+    type: path_traversal
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/download/safe
+    method: GET
+    parameter: file
+    expected_result: no_vulnerability
+    expected_behavior: "GET /files/download/safe?file=index.html is a legitimate access to a public file whose OWN content happens to textually contain \"../\" (decorative documentation text) -- this must never be confused with a protected-resource marker; PATH_TRAVERSAL_SECRET_MARKER never appears"
+
+  # --- 7. Local file inclusion ------------------------------------------------
+  - id: VULN-LFI-001
+    type: local_file_inclusion
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /files/lfi/vulnerable
+    method: GET
+    parameter: page
+    severity: high
+    severity_rationale: "unsanitized page parameter reaches template inclusion with no allowlist (synthetic templates only, see docs/phase-3-test-lab.md)"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: lfi-detector
+    expected_evidence:
+      probe_payload: "../../../etc/passwd"
+      response_contains: "sakanner-lab-synthetic-fixture-file"
+      description: "same signature family as path traversal, but through an 'include a page' parameter rather than a raw file-name parameter"
+    expected_behavior: "GET /files/lfi/vulnerable?page=../../../etc/passwd returns 200 with synthetic fixture content embedded in the page"
+  - id: VULN-LFI-NEG-001
+    type: local_file_inclusion
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /files/lfi/safe
+    method: GET
+    parameter: page
+    expected_result: no_vulnerability
+    expected_behavior: "the same payload against /files/lfi/safe returns 404 -- only allowlisted page names (home, about) succeed"
+
+  # Phase 3.7 addition: command injection via the "host" query
+  # parameter on a synthetic /api/ping/* endpoint family -- see
+  # internal/detectors/cmdinjection and
+  # docs/phase-3-7-command-injection.md. NOTHING here ever invokes a
+  # real shell or os/exec; "execution" is simulated entirely with Go
+  # regexp matching against a fake, lab-only command name
+  # (sakanner_lab_echo) recognized only by lab/harness_vuln.go's
+  # registerCommandInjectionAPI. The detector generates a fresh,
+  # unpredictable correlation token per probe and only ever treats
+  # "COMMAND_INJECTION_MARKER:<that exact token>" as evidence --
+  # response_contains below is necessarily descriptive (the prefix
+  # only), since the full string differs on every single probe by
+  # design.
+  # --- 7.5. Command injection ---------------------------------------------
+  - id: VULN-CMDI-API-001
+    type: command_injection
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /api/ping/vulnerable
+    method: GET
+    parameter: host
+    severity: critical
+    severity_rationale: "unsanitized host parameter reaches simulated command construction with no containment check, allowing an unpredictable, per-probe correlation token injected by the detector to be echoed back through simulated execution -- real command injection in an equivalent real target would mean arbitrary command execution"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: command-injection-detector
+    expected_evidence:
+      probe_payload: "; sakanner_lab_echo <fresh-per-probe-token> (also tested with a pipe separator and a URL-encoded semicolon variant)"
+      response_contains: "COMMAND_INJECTION_MARKER: (prefix only -- the full value includes a fresh, unpredictable per-probe token, generated freshly by the detector on every run, so no single literal string is ever expected twice)"
+      description: "a shell-metacharacter-prefixed value naming the lab's fake recognized command and a caller-supplied token causes the fixture's simulated command grammar to match, echoing the token back wrapped in the constant marker prefix -- proving execution occurred, not merely that the input was accepted"
+    expected_behavior: "GET /api/ping/vulnerable?host=127.0.0.1 returns a normal simulated ping response; GET ?host=%3Bsakanner_lab_echo%20<token> (or the semicolon/pipe/&& equivalents) returns 200 with COMMAND_INJECTION_MARKER:<the exact token supplied> appended"
+  # Phase 3.26 addition: a genuinely vulnerable endpoint using a
+  # DIFFERENT (Windows cmd.exe-shaped) separator grammar -- "&", "&&",
+  # "|", but explicitly NOT a bare ";" (real cmd.exe never treats a
+  # semicolon as a separator). The PRE-EXISTING command-injection
+  # detector's own pipe/double-ampersand variants ALSO correctly
+  # detect this fixture (only its semicolon variant doesn't) -- exactly
+  # the same ripple effect Phase 3.25 discovered and fixed for
+  # /ssrf/vulnerable-blind, addressed proactively here instead of
+  # reactively. See lab/harness_cmdinjection_active.go and
+  # docs/phase-3-26-command-injection-active.md.
+  - id: VULN-CMDI-API-WINDOWS-001
+    type: command_injection
+    vulnerability_class: injection
+    host: vuln.scanner.test
+    endpoint: /api/ping/vulnerable-windows
+    method: GET
+    parameter: host
+    severity: critical
+    severity_rationale: "unsanitized host parameter reaches simulated command construction using a Windows cmd.exe-shaped separator grammar, with no containment check -- real command injection in an equivalent real Windows target would mean arbitrary command execution"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: command-injection-detector
+    expected_evidence:
+      probe_payload: "&& sakanner_lab_echo <fresh-per-probe-token> (also tested with a pipe separator and a single-ampersand variant; the semicolon variant deliberately never matches this fixture's own grammar)"
+      response_contains: "COMMAND_INJECTION_MARKER: (prefix only -- the full value includes a fresh, unpredictable per-probe token)"
+      description: "a shell-metacharacter-prefixed value naming the lab's fake recognized command and a caller-supplied token causes the fixture's simulated Windows-style command grammar to match, echoing the token back wrapped in the constant marker prefix"
+    expected_behavior: "GET /api/ping/vulnerable-windows?host=127.0.0.1 returns a normal simulated ping response; GET ?host=%26%26sakanner_lab_echo%20<token> (or the pipe/single-ampersand equivalents) returns 200 with COMMAND_INJECTION_MARKER:<the exact token supplied> appended; the semicolon equivalent never matches"
+  - id: VULN-CMDI-API-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/safe
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/safe?host=<injection payload> returns 400 -- a strict hostname/IP-shaped allowlist rejects any value containing the shell metacharacters the vulnerable grammar depends on, before any command-grammar matching is attempted"
+  - id: VULN-CMDI-API-VALIDATION-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/safe
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "the same allowlist validation on /api/ping/safe rejects every representation the detector tries (raw, pipe-separated, URL-encoded) identically -- input validation, not encoding-specific luck, is what stops this"
+  - id: VULN-CMDI-API-SANITIZED-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/sanitized
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/sanitized?host=<injection payload> strips every recognized shell separator character from the decoded value before any grammar matching -- a different (still effective, against this detector's own probe set), metacharacters-as-plain-text strategy than /api/ping/safe's allowlist"
+  - id: VULN-CMDI-API-BYID-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/by-id
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/by-id?host=<injection payload> returns 404 -- the parameter is only ever used as an opaque allowlist key (1, 2, ...), never concatenated into anything resembling a command"
+  - id: VULN-CMDI-API-REFLECT-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/reflect
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/reflect?host=<injection payload> echoes the raw value back verbatim ('Requested host: <value>') -- the injected text is visible in the response, but the constant marker prefix + token combination the detector requires never appears, since nothing here ever attempts to interpret the value"
+  - id: VULN-CMDI-API-GENERIC-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/generic
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/generic?host=<any> always returns the identical '{\"status\":\"ok\"}' regardless of host or injection representation -- never reflects or executes anything"
+  - id: VULN-CMDI-API-STATICMARKER-NEG-001
+    type: command_injection
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /api/ping/static-marker
+    method: GET
+    parameter: host
+    expected_result: no_vulnerability
+    expected_behavior: "GET /api/ping/static-marker?host=<any> always includes the literal substring \"COMMAND_INJECTION_MARKER\" in a static HTML comment, regardless of input -- but never followed by \":\" and a real per-probe token, so the detector's exact prefix+token requirement is never satisfied even though the bare substring trivially appears"
+
+  # --- 8. SSRF -----------------------------------------------------------------
+  - id: VULN-SSRF-001
+    type: ssrf
+    vulnerability_class: ssrf
+    host: vuln.scanner.test
+    endpoint: /ssrf/vulnerable
+    method: GET
+    parameter: url
+    severity: critical
+    severity_rationale: "server-side request forgery with no destination-purpose validation (only a lab-safety network-range restriction, not a real fix -- see docs/phase-3-test-lab.md)"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: ssrf-detector
+    expected_evidence:
+      probe_payload: "http://ssrf-internal.scanner.test/"
+      response_contains: "ssrf-internal-fixture"
+      description: "the fixture's own server-side process fetches the caller-supplied URL and reflects the response body -- proof the application, not the caller's browser, made the request"
+    expected_behavior: "GET /ssrf/vulnerable?url=http://ssrf-internal.scanner.test/ returns 200 containing the internal fixture's response, proving the server made the request on the caller's behalf"
+    isolation_note: "the fixture itself refuses any destination outside 127.0.0.0/8 (a lab safety net, not part of the vulnerability's own logic) -- see docs/phase-3-test-lab.md 'SSRF fixture isolation'"
+  # Phase 3.25 addition: a genuinely vulnerable endpoint whose response
+  # NEVER reveals fetch outcome (the fetch happens in a goroutine,
+  # modeling an async/queued job) -- the only meaningful proof
+  # available is out-of-band callback correlation, which the
+  # PRE-EXISTING ssrf detector's own callback-confirmed tier already
+  # correctly picks up (it needs no knowledge of internal/detectors/ssrfactive
+  # to do so -- both detectors share the same lab.SSRFCallbackServer).
+  # See lab/harness_ssrf_active.go and docs/phase-3-25-ssrf-active-detection.md.
+  - id: VULN-SSRF-BLIND-001
+    type: ssrf
+    vulnerability_class: ssrf
+    host: vuln.scanner.test
+    endpoint: /ssrf/vulnerable-blind
+    method: GET
+    parameter: url
+    severity: critical
+    severity_rationale: "server-side request forgery, blind/OOB only -- the response never reveals fetch outcome regardless of success or failure, so callback correlation is the only evidence a detector can ever rely on for this specific endpoint"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: ssrf-detector
+    expected_evidence:
+      description: "the fixture's own server-side process fetches the caller-supplied URL in a goroutine, but the HTTP response is always \"202 queued\" regardless of outcome -- only an out-of-band callback observation proves the fetch occurred"
+    expected_behavior: "GET /ssrf/vulnerable-blind?url=<callback> always returns 202 \"queued\"; the callback service still records a real hit shortly afterward"
+    isolation_note: "the fixture itself refuses any destination outside 127.0.0.0/8 (a lab safety net, not part of the vulnerability's own logic) -- see docs/phase-3-test-lab.md 'SSRF fixture isolation'"
+  - id: VULN-SSRF-NEG-001
+    type: ssrf
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /ssrf/safe
+    method: GET
+    parameter: url
+    expected_result: no_vulnerability
+    expected_behavior: "GET /ssrf/safe?url=<anything not in a fixed allowlist> returns 400; the one allowlisted destination is never actually fetched even when it matches"
+
+  # Phase 3.4 additions: four more negative shapes beyond "safe
+  # allowlist" above -- see internal/detectors/ssrf and
+  # docs/phase-3-4-ssrf.md. No new positive fixture was needed:
+  # VULN-SSRF-001 above already covers "basic SSRF URL fetch through a
+  # query parameter" exactly as Phase 3.4 requests; a POST-parameter
+  # SSRF fixture was deliberately not added since Phase 2's recon model
+  # (internal/detection.BuildTargets) has no POST/form parameter
+  # surface to test against yet -- the same honestly-documented gap
+  # xssreflected and sqli both already carry.
+  - id: VULN-SSRF-REFLECT-NEG-001
+    type: ssrf
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /ssrf/reflect-only
+    method: GET
+    parameter: url
+    expected_result: no_vulnerability
+    expected_behavior: "GET /ssrf/reflect-only?url=<callback> echoes the URL into the response body but never fetches it server-side -- reflection is not sufficient evidence of SSRF"
+  - id: VULN-SSRF-STORE-NEG-001
+    type: ssrf
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /ssrf/store-only
+    method: GET
+    parameter: url
+    expected_result: no_vulnerability
+    expected_behavior: "GET /ssrf/store-only?url=<callback> returns 'saved' and never fetches the URL -- simulates a webhook registration with no immediate server-side trigger"
+  - id: VULN-SSRF-CLIENTFETCH-NEG-001
+    type: ssrf
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /ssrf/client-fetch
+    method: GET
+    parameter: url
+    expected_result: no_vulnerability
+    expected_behavior: "GET /ssrf/client-fetch?url=<callback> embeds the URL in an <img> tag -- only ever fetched by a rendering browser (client-side), never by the server itself"
+  - id: VULN-SSRF-VALIDATEREJECT-NEG-001
+    type: ssrf
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /ssrf/validate-reject
+    method: GET
+    parameter: url
+    expected_result: no_vulnerability
+    expected_behavior: "GET /ssrf/validate-reject?url=<callback> requires the destination host to be an allowlisted partner domain -- any probe's callback URL is rejected with 400 before any fetch is attempted"
+
+  # --- 9. Open redirect ---------------------------------------------------------
+  - id: VULN-OPENREDIRECT-001
+    type: open_redirect
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /redirect/open/vulnerable
+    method: GET
+    parameter: next
+    severity: medium
+    severity_rationale: "commonly used for phishing (a link to a trusted domain that redirects to an attacker page); does not itself grant access to anything"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: open-redirect-detector
+    expected_evidence:
+      probe_payload: "http://external.scanner.test/"
+      description: "the Location response header echoes the next parameter verbatim with no validation"
+      redirect_location_contains: "external.scanner.test"
+    expected_behavior: "GET /redirect/open/vulnerable?next=http://external.scanner.test/ returns 302 with Location: http://external.scanner.test/ -- this is also the scope-enforcement scenario below: sakanner itself must never follow that hop"
+  - id: VULN-OPENREDIRECT-NEG-001
+    type: open_redirect
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /redirect/open/safe
+    method: GET
+    parameter: next
+    expected_result: no_vulnerability
+    expected_behavior: "GET /redirect/open/safe?next=http://external.scanner.test/ returns 302 with Location: /dashboard -- the requested destination is validated against a fixed allowlist and silently replaced with a safe default when it doesn't match"
+
+  # --- 10. Security misconfiguration (verbose error / stack trace) -------------
+  - id: VULN-MISCONFIG-STACKTRACE-001
+    type: security_misconfiguration
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /misconfig/stacktrace/vulnerable
+    method: GET
+    severity: medium
+    severity_rationale: "discloses internal implementation detail (framework, file paths, a synthetic secret-shaped string) useful for further attack planning, but grants no direct access itself"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: verbose-error-detector
+    expected_evidence:
+      response_contains: "Traceback (most recent call last)"
+      description: "a 500 response includes a full stack-trace-shaped body with an internal hostname and a secret-shaped string"
+    expected_behavior: "GET /misconfig/stacktrace/vulnerable returns 500 with a verbose, stack-trace-shaped body"
+  - id: VULN-MISCONFIG-STACKTRACE-NEG-001
+    type: security_misconfiguration
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /misconfig/stacktrace/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /misconfig/stacktrace/safe also returns 500, but with a generic, no-detail error message"
+
+  # --- 11. Sensitive information exposure ---------------------------------------
+  - id: VULN-INFO-EXPOSURE-001
+    type: sensitive_information_exposure
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /info/exposure/vulnerable
+    method: GET
+    severity: high
+    severity_rationale: "an API-key-shaped credential is present in page source reachable by any unauthenticated visitor"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: sensitive-data-exposure-detector
+    expected_evidence:
+      response_contains: "api_key=sk_test_SAKANNER_LAB_FIXTURE"
+      description: "an HTML comment left in the response body contains a credential-shaped string"
+    expected_behavior: "GET /info/exposure/vulnerable returns 200 with an HTML comment containing a fixture API-key-shaped string"
+  - id: VULN-INFO-EXPOSURE-NEG-001
+    type: sensitive_information_exposure
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /info/exposure/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /info/exposure/safe returns 200 with no comment and no credential-shaped content"
+
+  # --- 12. Insecure HTTP security configuration (cookie flags) -----------------
+  - id: VULN-INSECURE-COOKIE-001
+    type: insecure_cookie_configuration
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /cookies/insecure/vulnerable
+    method: GET
+    severity: medium
+    severity_rationale: "a session cookie without HttpOnly is readable by injected script (compounds any XSS elsewhere on the same origin); without Secure it can be sent over plaintext HTTP"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: insecure-cookie-detector
+    expected_evidence:
+      response_header: Set-Cookie
+      response_header_missing_attributes: ["HttpOnly", "Secure", "SameSite"]
+      description: "the Set-Cookie response header for the session cookie carries none of the three protective attributes"
+    expected_behavior: "GET /cookies/insecure/vulnerable returns Set-Cookie: session=...; Path=/ with no HttpOnly, Secure, or SameSite attribute"
+  - id: VULN-INSECURE-COOKIE-NEG-001
+    type: insecure_cookie_configuration
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /cookies/insecure/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /cookies/insecure/safe returns Set-Cookie: session=...; Path=/; HttpOnly; Secure; SameSite=Strict -- all three attributes present"
+
+  # --- 13. CORS misconfiguration -------------------------------------------------
+  - id: VULN-CORS-001
+    type: cors_misconfiguration
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /cors/vulnerable
+    method: GET
+    severity: high
+    severity_rationale: "reflecting an arbitrary Origin combined with Allow-Credentials: true lets ANY origin read authenticated response data cross-site -- one of the more directly exploitable misconfiguration classes"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: cors-misconfiguration-detector
+    expected_evidence:
+      probe_payload: "Origin: https://evil.example"
+      response_header: Access-Control-Allow-Origin
+      response_contains: "https://evil.example"
+      description: "sending an arbitrary Origin header causes it to be reflected back verbatim in Access-Control-Allow-Origin, alongside Access-Control-Allow-Credentials: true"
+    expected_behavior: "a request with Origin: https://evil.example against /cors/vulnerable gets Access-Control-Allow-Origin: https://evil.example and Access-Control-Allow-Credentials: true in the response"
+  - id: VULN-CORS-NEG-001
+    type: cors_misconfiguration
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /cors/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "regardless of the Origin header sent, /cors/safe always responds with the fixed Access-Control-Allow-Origin: https://scanner.test and no Allow-Credentials header"
+
+  # --- 14. Missing or weak security headers ---------------------------------------
+  - id: VULN-MISSING-HEADERS-001
+    type: missing_security_headers
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /headers/missing/vulnerable
+    method: GET
+    severity: low
+    severity_rationale: "defense-in-depth gap, not directly exploitable on its own, but removes several standard mitigations (clickjacking, MIME-sniffing, downgrade attacks) at once"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: missing-security-headers-detector
+    expected_evidence:
+      response_headers_absent: ["Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options", "Strict-Transport-Security"]
+      description: "none of the standard security response headers are present"
+    expected_behavior: "GET /headers/missing/vulnerable returns 200 with no Content-Security-Policy, X-Content-Type-Options, X-Frame-Options, or Strict-Transport-Security header"
+  - id: VULN-MISSING-HEADERS-NEG-001
+    type: missing_security_headers
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /headers/missing/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /headers/missing/safe returns all four headers with reasonable, secure values"
+
+  # --- 15. Known vulnerable software/component -----------------------------------
+  - id: VULN-COMPONENT-001
+    type: vulnerable_component
+    vulnerability_class: vulnerable_and_outdated_components
+    host: vuln.scanner.test
+    endpoint: /component/vulnerable
+    method: GET
+    severity: medium
+    severity_rationale: "jQuery 1.6.1 is long past end-of-life with multiple public CVEs against versions in that range; severity here reflects component age/exposure, not a demonstrated exploit against this specific fixture"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: known-vulnerable-component-detector
+    requires_capability: "none -- this is a direct extension of Phase 2's already-built technology/version fingerprinting (internal/fingerprint), which already extracts the exact version string this fixture serves"
+    expected_evidence:
+      response_contains: "jQuery v1.6.1"
+      description: "the page loads /component/old-jquery.js, whose banner comment names jQuery 1.6.1 -- Phase 2's fingerprinter (internal/fingerprint.DefaultSignatures's jQuery signature) already extracts this exact version into a Technology row; a Phase 3 detector only needs to compare that version against a known-vulnerable-versions list"
+    expected_behavior: "crawling /component/vulnerable discovers old-jquery.js, and sakanner's existing JS-discovery/fingerprinting pipeline (unchanged by this lab) persists a Technology{Name:\"jQuery\", Version:\"1.6.1\"} row for it"
+  - id: VULN-COMPONENT-NEG-001
+    type: vulnerable_component
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /component/safe
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "the safe page loads current-jquery.js, serving the same jQuery 3.6.0 fixture already used by scanner.test/js.scanner.test in the Phase 2 lab -- a current, non-vulnerable version"
+
+  # --- 16. Exposed administrative/debug endpoint -----------------------------------
+  - id: VULN-EXPOSED-ADMIN-001
+    type: exposed_admin_endpoint
+    vulnerability_class: broken_access_control
+    host: vuln.scanner.test
+    endpoint: /admin/exposed
+    method: GET
+    severity: high
+    severity_rationale: "an administrative interface reachable with no authentication at all"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: exposed-admin-endpoint-detector
+    expected_evidence:
+      response_contains: "Admin Panel"
+      description: "the admin panel content is returned to an unauthenticated request"
+    expected_behavior: "GET /admin/exposed (no Authorization header) returns 200 with admin panel content"
+  - id: VULN-EXPOSED-ADMIN-NEG-001
+    type: exposed_admin_endpoint
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /admin/protected
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /admin/protected with no Authorization header returns 401; only a fixed, synthetic bearer token succeeds"
+
+  # --- 17. Directory listing --------------------------------------------------------
+  - id: VULN-DIRLISTING-001
+    type: directory_listing
+    vulnerability_class: security_misconfiguration
+    host: vuln.scanner.test
+    endpoint: /directory-listing/vulnerable/
+    method: GET
+    severity: low
+    severity_rationale: "discloses filenames (here, synthetic ones suggestive of backups/config) that aid further reconnaissance, but does not itself serve their content"
+    authentication_required: false
+    automatically_detectable: true
+    detector_category: directory-listing-detector
+    expected_evidence:
+      response_contains: "Index of /uploads"
+      description: "a classic 'Index of /' directory-listing page, listing synthetic filenames"
+    expected_behavior: "GET /directory-listing/vulnerable/ returns 200 with an 'Index of /uploads' style body"
+  - id: VULN-DIRLISTING-NEG-001
+    type: directory_listing
+    negative: true
+    host: vuln.scanner.test
+    endpoint: /directory-listing/safe/
+    method: GET
+    expected_result: no_vulnerability
+    expected_behavior: "GET /directory-listing/safe/ returns 403 Forbidden"
+
+# --- Scope enforcement scenarios (extends the Phase 2 lab's own) -----------------
+#
+# These are not findings -- they document how the vulnerable fixtures
+# specifically exercise scope enforcement, on top of what
+# lab/ground-truth.yaml (Phase 2) already covers.
+scope_enforcement_scenarios:
+  - description: "vuln.scanner.test's index page links directly to the established Phase 2 out-of-scope host"
+    mechanism: crawler_link
+    reference_host: external.scanner.test
+    expected_behavior: "the crawler never follows this link (same-origin restriction, unchanged from Phase 2); no Asset/Host row for external.scanner.test after a scan"
+  - description: "the open-redirect vulnerability's own natural exploitation path points at an out-of-scope host"
+    mechanism: http_redirect
+    reference_host: external.scanner.test
+    fixture: /redirect/open/vulnerable?next=http://external.scanner.test/
+    expected_behavior: "safedial's CheckRedirect truncates the chain at this hop (unchanged from Phase 2's own redirect-to-out-of-scope test); sakanner never dials external.scanner.test"
+  - description: "the SSRF fixture's own vulnerability surface could in principle be pointed at an out-of-scope-looking destination"
+    mechanism: ssrf_parameter
+    reference_host: external.scanner.test
+    expected_behavior: "this is a property of the FIXTURE APPLICATION's own request (made by vuln.scanner.test's server-side process), not of sakanner's dialing -- sakanner's scope enforcement governs what SAKANNER dials, which is unaffected either way. The fixture's own 127.0.0.0/8-only safety net (see the SSRF finding above) means even the fixture itself could not reach external.scanner.test's real address if asked to, independent of sakanner entirely. See docs/phase-3-test-lab.md 'SSRF fixture isolation' for the full reasoning."
+
+# --- Authentication/authorization coverage summary -------------------------------
+#
+# Documents which findings above specifically exercise each of the four
+# scenarios requested: unauthenticated access, authenticated access,
+# unauthorized access, horizontal authorization failure.
+authentication_coverage:
+  unauthenticated_access:
+    - VULN-EXPOSED-ADMIN-001 # reachable with no credentials at all
+  authenticated_access_required_and_enforced:
+    - VULN-EXPOSED-ADMIN-NEG-001 # correctly requires a bearer token
+  unauthorized_access_correctly_denied:
+    - VULN-IDOR-NEG-001 # a valid session for the WRONG user is correctly denied
+  horizontal_authorization_failure:
+    - VULN-IDOR-001 # a valid session for user A can read user B's data

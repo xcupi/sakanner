@@ -1,0 +1,236 @@
+# Ground truth for sakanner's Phase 2 Test Laboratory.
+#
+# This file is the single source of truth for the lab's integration
+# tests (lab/lab_test.go) -- every assertion compares an actual
+# scan result against a fact recorded here, never against the scanner's
+# own prior output. It is also read at run time by the Go-native lab
+# harness (lab/harness) to build its DNS zone, so the harness and
+# the test assertions can never silently drift apart.
+#
+# See docs/phase-2-test-lab.md for the full narrative (architecture,
+# how to run, known limitations). This file intentionally stays terse.
+
+domain: scanner.test
+
+# --- Scope -------------------------------------------------------------
+# The lab does NOT use one broad domain_suffix rule for *.scanner.test,
+# because two of the out-of-scope hostnames below (admin.scanner.test,
+# external.scanner.test) are themselves subdomains of scanner.test --
+# a real-world-realistic scoping mistake this lab specifically exists to
+# catch. Instead, scope is granted per-hostname (exact_host allow), and
+# everything else is denied purely by sakanner's fail-closed default (no
+# matching rule = deny) -- not by an explicit deny rule. This is the
+# stronger test: it proves default-deny actually works, not just that an
+# explicit deny overrides an allow.
+scope:
+  in_scope:
+    - scanner.test
+    - www.scanner.test
+    - api.scanner.test
+    - static.scanner.test
+    - redirect.scanner.test
+    - js.scanner.test
+    - slow.scanner.test
+    - refuse.scanner.test
+    - altport.scanner.test
+    - ipv6.scanner.test # best-effort: only if the host supports IPv6 loopback
+  out_of_scope:
+    - admin.scanner.test # CNAME -> external.scanner.test; no scope rule of its own
+    - external.scanner.test # RFC 5737 TEST-NET-3; no scope rule
+    - another-test.local # different domain entirely; no scope rule
+
+# --- DNS -----------------------------------------------------------------
+# hostname -> record. "a"/"aaaa" gives the literal IP the Go-native
+# harness's FakeResolver (and the Docker profile's dnsmasq) must answer
+# with; "cname" gives the canonical name a CNAME lookup must return.
+#
+# Every in-scope hostname gets its OWN distinct loopback address
+# (127.0.0.11-127.0.0.18, all within 127.0.0.0/8) rather than sharing
+# 127.0.0.1, because sakanner's port scanner applies the SAME port list
+# to every resolved host -- two hostnames sharing one IP would see each
+# other's open ports and contaminate each other's results. See
+# harness.go and docs/phase-2-test-lab.md for the full rationale.
+#
+# external.scanner.test and another-test.local resolve to addresses in
+# 203.0.113.0/24 (RFC 5737 TEST-NET-3, reserved for documentation --
+# guaranteed to never route to a real host). This is deliberate: if a
+# scope-enforcement bug ever let the scanner dial an "out of scope"
+# target, the dial would simply time out against a documentation-only
+# network, not reach a real third party.
+dns:
+  scanner.test: { a: 127.0.0.11 }
+  www.scanner.test: { cname: scanner.test }
+  api.scanner.test: { a: 127.0.0.12 }
+  static.scanner.test: { a: 127.0.0.13 }
+  redirect.scanner.test: { a: 127.0.0.14 }
+  js.scanner.test: { a: 127.0.0.15 }
+  slow.scanner.test: { a: 127.0.0.16 }
+  refuse.scanner.test: { a: 127.0.0.17 }
+  altport.scanner.test: { a: 127.0.0.18 }
+  admin.scanner.test: { cname: external.scanner.test }
+  external.scanner.test: { a: 203.0.113.99 }
+  another-test.local: { a: 203.0.113.98 }
+  ipv6.scanner.test: { aaaa: "::1" }
+
+# --- Docker-profile ports ------------------------------------------------
+# The Go-native harness (used to actually verify this lab -- see
+# docs/phase-2-test-lab.md) binds every service to an OS-assigned free
+# port at start time and reconciles that at runtime, so its tests never
+# hardcode a port and can never hit a "port already in use" flake. This
+# section documents the FIXED ports the Docker Compose profile publishes
+# on the host instead, since a containerized service isn't subject to the
+# same conflict risk. If you add a service to docker-compose.yml, add its
+# port here too so this stays authoritative for that profile.
+docker_ports:
+  nginx_http: 8080
+  nginx_https: 8443
+  apache_http: 8081
+  api_http: 8082
+  redirect_http: 8083
+  redirect_https: 8444
+  jsapp_http: 8084
+  slow_http: 8085
+  altport_http: 8099
+  dns_udp: 15353
+  # refuse.scanner.test has deliberately NO published port in the Docker
+  # profile either -- nothing listens there, by design.
+
+# --- Services --------------------------------------------------------------
+services:
+  scanner.test:
+    scheme: http
+    server_header: "nginx/1.25.3"
+    expected_technology: { name: nginx, version: "1.25.3", category: web-server }
+    # endpoints.Normalize dedups by (path, method, source) -- not just
+    # (path, method) -- so a path reached BOTH by being crawled as a page
+    # AND by being linked from another page legitimately produces two
+    # entries (one per source), while the two literally-identical /about
+    # links (one relative "about", one absolute-path "/about") correctly
+    # collapse into a single link-sourced entry. Verified empirically
+    # against this exact fixture (lab/fixtures/scanner-test-index.html),
+    # not assumed.
+    endpoints:
+      - { path: /, method: GET, source: crawl }
+      - { path: /about, method: GET, source: crawl } # the crawler followed the link and fetched /about as a page
+      - { path: /about, method: GET, source: link } # the two identical <a> links to /about, deduped to one
+      - { path: /contact, method: POST, source: form }
+      - { path: /evil.js, method: GET, source: javascript } # see note below
+      - { path: /search, method: GET, source: crawl } # crawled as a page; the crawler's own queue drops the query string (see internal/crawler.go's samePathLinks)
+      - { path: "/search?q=test&sort=asc", method: GET, source: link } # the <a> link itself, query string preserved
+      - { path: /static/app.js, method: GET, source: javascript }
+    endpoint_count: 8 # verified against the actual pipeline run, not assumed
+    javascript:
+      - { url: /static/app.js, technology: { name: jQuery, version: "3.6.0" } }
+    # Linked from this page's HTML but must never be dialed -- proves the
+    # crawler's same-origin restriction holds against a real out-of-scope
+    # reference, not just in isolation.
+    links_to_out_of_scope:
+      - http://external.scanner.test/
+      - http://admin.scanner.test/
+    # KNOWN NUANCE (not a scope-safety bug -- see docs/phase-2-test-lab.md
+    # "Known limitations"): the page also references
+    # http://external.scanner.test/evil.js as a <script src>. The
+    # crawler's Page.Scripts field records every <script src>
+    # unconditionally, regardless of origin (only the LATER
+    # fetch-and-fingerprint stage in orchestration filters to same-origin
+    # before dialing -- see internal/orchestration/pipeline.go's
+    # discoverJavaScriptTechnologies), and endpoints.Normalize's pathOf()
+    # extracts only the path component, discarding host. The net effect:
+    # "/evil.js" is recorded as a same-service Endpoint even though it
+    # was never fetched and external.scanner.test was never dialed (the
+    # out_of_scope_never_scanned test proves that separately). This is a
+    # data-completeness quirk in endpoint bookkeeping, not a scope
+    # violation -- and is one of the concrete findings this lab exists to
+    # surface for Phase 2 QA's attention, not to silently fix here.
+
+  www.scanner.test:
+    # Same content as scanner.test, reached via CNAME -- proves CNAME
+    # resolution feeds correctly into the same in-scope host.
+    scheme: http
+    server_header: "nginx/1.25.3"
+    expected_technology: { name: nginx, version: "1.25.3", category: web-server }
+
+  api.scanner.test:
+    scheme: http
+    server_header: "Apache/2.4.58 (Ubuntu)"
+    expected_technology: { name: Apache, version: "2.4.58", category: web-server }
+    # Same crawl-vs-link duality as scanner.test above: /items and
+    # /users/42 are both crawled as pages AND recorded as the links that
+    # led to them. Verified empirically, not assumed.
+    endpoints:
+      - { path: /, method: GET, source: crawl }
+      - { path: /items, method: GET, source: crawl }
+      - { path: "/items?category=books&sort=asc", method: GET, source: link }
+      - { path: /users/42, method: GET, source: crawl }
+      - { path: /users/42, method: GET, source: link }
+    endpoint_count: 5
+
+  static.scanner.test:
+    scheme: http
+    server_header: "" # deliberately no Server header -- negative fingerprinting case
+    expected_technology: null
+
+  redirect.scanner.test:
+    scheme: http
+    # Every path below is served on the SAME host; sakanner probes HTTPS
+    # first, HTTP second (internal/http.Prober.Probe), and this host
+    # answers both, so the redirect chain is exercised end to end.
+    redirects:
+      - { path: /, expect_hops: 1, expect_final_scheme: https, description: "HTTP to HTTPS, single hop" }
+      - { path: /multi, expect_hops: 2, expect_final_path: /multi/done, description: "multi-step redirect chain" }
+      - { path: /loop, expect_truncated: true, description: "redirect loop -- must be truncated at MaxRedirects, not followed forever" }
+      - { path: /external-redirect, expect_truncated: true, description: "redirect to an out-of-scope host -- must be truncated, external.scanner.test must never be dialed" }
+    status_codes:
+      - { path: /missing, expect_status: 404 }
+      - { path: /forbidden, expect_status: 403 }
+      - { path: /error, expect_status: 500 }
+
+  js.scanner.test:
+    scheme: http
+    endpoints:
+      - { path: /, method: GET, source: crawl }
+      - { path: /app.js, method: GET, source: javascript }
+    endpoint_count: 2
+    javascript:
+      - { url: /app.js, technology: { name: jQuery, version: "3.6.0" } }
+
+  slow.scanner.test:
+    scheme: http
+    scenario: timeout
+    # The handler sleeps longer than the configured HTTP timeout; the
+    # scan must not hang and must complete the overall job regardless.
+    response_delay_exceeds_configured_timeout: true
+
+  refuse.scanner.test:
+    scheme: http
+    scenario: connection_refused
+    # Nothing listens on this host's assigned port. The scan must record
+    # "no service" for this port, not crash or hang.
+
+  altport.scanner.test:
+    scheme: http
+    scenario: non_standard_port
+    in_default_port_list: false
+    # Only discoverable when the scan is explicitly told to probe this
+    # port (scanner scan --ports <port>), proving non-default-port
+    # scanning works and is NOT silently on by default.
+
+# --- Query parameters ------------------------------------------------------
+# sakanner's endpoint discovery (internal/endpoints) preserves a
+# discovered URL's full query string as part of Endpoint.Path (see
+# "/search?q=test&sort=asc" and "/items?category=books&sort=asc" above).
+# Extracting individual parameter *names* into their own model
+# (pkg/models.Parameter) is a documented future-phase feature
+# (internal/parameters is still a stub) -- this lab validates what
+# currently exists (query-string preservation), not a feature that
+# hasn't been built yet.
+parameter_discovery_note: "query strings are preserved in Endpoint.Path; per-parameter extraction (pkg/models.Parameter) is not implemented yet (see internal/parameters stub)"
+
+# --- External tool fault tolerance -----------------------------------------
+# Covered by internal/orchestration/external_tool_fault_test.go, not this
+# network lab -- those conditions (malformed tool output, a tool that
+# hangs, a tool that exits non-zero) are subprocess-behavior tests, not
+# network-behavior tests, and reuse the existing testutil.WriteScript
+# fake-binary pattern already established for the Phase 2 plugin
+# adapters. See docs/phase-2-test-lab.md.
+external_tools_note: "see internal/orchestration/external_tool_fault_test.go"

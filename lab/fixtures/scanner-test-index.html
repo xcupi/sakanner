@@ -1,0 +1,24 @@
+<html>
+<head><title>sakanner lab: scanner.test</title></head>
+<body>
+<h1>scanner.test</h1>
+<p>Relative and absolute-path links (both resolving to the same endpoint,
+proving link-resolution dedup), a query-string link, a form, a script
+reference, and two references to hosts that are NOT in this scan's
+scope. The two out-of-scope references use a full "scheme://host/..."
+URL rather than a relative one -- deliberately, since a relative
+reference always resolves within the current origin and so could never
+even appear to point elsewhere.</p>
+<a href="about">About (relative link, no leading slash)</a>
+<a href="/about">About (absolute-path link -- same target, must dedup to one endpoint)</a>
+<a href="/search?q=test&amp;sort=asc">Search (absolute-path link, query params)</a>
+<form action="/contact" method="post">
+  <input type="text" name="message">
+  <button type="submit">Send</button>
+</form>
+<script src="/static/app.js"></script>
+<a href="http://external.scanner.test/">External (out of scope -- must never be dialed)</a>
+<a href="http://admin.scanner.test/">Admin (out of scope -- must never be dialed)</a>
+<script src="http://external.scanner.test/evil.js"></script>
+</body>
+</html>
