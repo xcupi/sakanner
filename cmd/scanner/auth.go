@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -23,7 +24,7 @@ func authProfileConfigs(cfg *config.Config) []auth.ProfileConfig {
 	for _, pc := range cfg.Authentication.Profiles {
 		out = append(out, auth.ProfileConfig{
 			Name: pc.Name, Type: auth.Type(pc.Type),
-			LoginURL: pc.LoginURL, UsernameEnv: pc.UsernameEnv, PasswordEnv: pc.PasswordEnv,
+			LoginURL: pc.LoginURL, StartURL: pc.StartURL, UsernameEnv: pc.UsernameEnv, PasswordEnv: pc.PasswordEnv,
 			UsernameField: pc.UsernameField, PasswordField: pc.PasswordField, ExtraFields: pc.ExtraFields,
 			SuccessURLContains: pc.SuccessURLContains, SuccessTextContains: pc.SuccessTextContains, FailureTextContains: pc.FailureTextContains,
 			CookieEnv: pc.CookieEnv, TokenEnv: pc.TokenEnv,
@@ -52,15 +53,131 @@ stored in configuration: each profile REFERENCES an environment
 variable (e.g. "username_env: SAKANNER_LAB_USERNAME") that must be set
 in the environment before the profile can actually be used.
 
+A "form_login_auto" profile skips login_url/username_field/password_field
+entirely: give it a start_url (any reachable same-origin page, not
+necessarily the login page) plus credentials, and sakanner discovers
+the actual login page/form/field names itself -- see "scanner auth
+discover --help" to preview what discovery finds before configuring
+anything.
+
 Subcommands:
-  profiles list          show every configured profile in one table
-  profiles show <name>   show one profile's full (secret-free) detail
+  discover <start-url>   preview (or perform) automatic login-form discovery
+  profiles list           show every configured profile in one table
+  profiles show <name>    show one profile's full (secret-free) detail
 
 Use "scanner scan <target> --auth-profile <name>" to authenticate
 before scanning.`,
 	}
-	cmd.AddCommand(newAuthProfilesCmd(a))
+	cmd.AddCommand(newAuthDiscoverCmd(a), newAuthProfilesCmd(a))
 	return cmd
+}
+
+// newAuthDiscoverCmd implements Phase 3.36's `scanner auth discover
+// <start-url>` -- a standalone way to preview (or, with credentials,
+// actually perform) automatic login-form discovery without first
+// writing a form_login_auto profile into config. Strictly read-only
+// with respect to sakanner's OWN persistent state: it never creates a
+// scan job, never writes to storage, and (in preview mode, the
+// default) never submits a credential anywhere -- it only ever reads
+// the currently-configured scope rules (to scope-check the target,
+// exactly like any other authentication attempt) and performs the
+// same bounded, same-origin HTTP fetches internal/auth.DiscoverOnly
+// itself is documented to make.
+func newAuthDiscoverCmd(a *app) *cobra.Command {
+	var usernameEnv, passwordEnv string
+	cmd := &cobra.Command{
+		Use:   "discover <start-url>",
+		Short: "Preview (or perform) automatic login-form discovery against a target",
+		Long: `Preview -- or, with credentials, actually perform -- sakanner's
+automatic login-form discovery (the same mechanism a "form_login_auto"
+authentication profile uses at scan time).
+
+<start-url> is any reachable, same-origin page on the target
+application (an absolute http(s) URL) -- not necessarily the exact
+login page; discovery looks there first, then follows a bounded
+number of same-origin "login-like" links if the start page itself has
+no password field.
+
+With no --username-env/--password-env, this command ONLY discovers
+and reports what it found -- no credential is read, no form is ever
+submitted, nothing is authenticated. This is the safe way to check
+what discovery would find before writing a form_login_auto profile,
+or against an application you're not yet sure has a conventional
+login form at all.
+
+With BOTH --username-env and --password-env given, this command also
+attempts one real login using the discovered form -- exactly what a
+"scan --identity <name>" would do for a form_login_auto profile
+pointed at the same start_url -- and reports whether it succeeded.
+Never prints credential values.
+
+An "allow" scope rule for the target is still required -- see
+"scanner scope --help".`,
+		Example: `  scanner auth discover http://203.0.113.10/                          # preview only
+  export SAKANNER_USERNAME=myuser
+  export SAKANNER_PASSWORD=mypassword
+  scanner auth discover http://203.0.113.10/ --username-env SAKANNER_USERNAME --password-env SAKANNER_PASSWORD`,
+		Args: singleRequiredArg("a start URL",
+			"scanner auth discover http://203.0.113.10/"),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if (usernameEnv == "") != (passwordEnv == "") {
+				return &exitCodeErr{code: exitGenericError, err: fmt.Errorf("--username-env and --password-env must both be given, or neither (for a discovery-only preview)")}
+			}
+			startURL, err := url.Parse(args[0])
+			if err != nil || startURL.Scheme == "" || startURL.Host == "" || (startURL.Scheme != "http" && startURL.Scheme != "https") {
+				return &exitCodeErr{code: exitGenericError, err: fmt.Errorf("%q is not a valid absolute http(s) URL", args[0])}
+			}
+			deps, err := buildAuthDependencies(cmd, a)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+
+			if usernameEnv == "" {
+				fmt.Fprintf(out, "Discovering a login form starting from %s (preview only -- no credentials submitted)...\n", startURL)
+				result, discErr := auth.DiscoverOnly(cmd.Context(), deps, startURL, 0, 0)
+				if discErr != nil {
+					return &exitCodeErr{code: exitAuthFailed, err: fmt.Errorf("discovery failed: %w", discErr)}
+				}
+				printDiscoveryResult(out, result)
+				return nil
+			}
+
+			pc := auth.ProfileConfig{Name: "auth-discover", Type: auth.TypeFormLoginAuto, StartURL: startURL.String(), UsernameEnv: usernameEnv, PasswordEnv: passwordEnv}
+			profile, resolveErr := auth.ResolveProfile(pc)
+			if resolveErr != nil {
+				return &exitCodeErr{code: exitAuthFailed, err: resolveErr}
+			}
+			provider, err := auth.NewProvider(profile)
+			if err != nil {
+				return &exitCodeErr{code: exitAuthFailed, err: err}
+			}
+			fmt.Fprintf(out, "Discovering a login form and authenticating, starting from %s...\n", startURL)
+			sess, authErr := provider.Authenticate(cmd.Context(), deps)
+			if authErr != nil {
+				fmt.Fprintf(out, "Authentication FAILED: %v\n", authErr)
+				return &exitCodeErr{code: exitAuthFailed, err: authErr}
+			}
+			fmt.Fprintln(out, "Authentication succeeded.")
+			if sess.LoginURL != nil {
+				fmt.Fprintf(out, "Discovered login URL: %s\n", sess.LoginURL)
+			}
+			summary := sess.Redacted()
+			fmt.Fprintf(out, "Session cookies established: %d\n", summary.CookieCount)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&usernameEnv, "username-env", "", "environment variable holding the username -- with --password-env, also attempts a real login; omit both for a discovery-only preview")
+	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "environment variable holding the password (see --username-env)")
+	return cmd
+}
+
+func printDiscoveryResult(out io.Writer, result auth.DiscoveryResult) {
+	fmt.Fprintln(out, "Login form discovered:")
+	fmt.Fprintf(out, "  Login URL:      %s\n", result.LoginURL)
+	fmt.Fprintf(out, "  Method:         %s\n", result.Method)
+	fmt.Fprintf(out, "  Username field: %s\n", result.UsernameField)
+	fmt.Fprintf(out, "  Password field: %s\n", result.PasswordField)
 }
 
 func newAuthProfilesCmd(a *app) *cobra.Command {
@@ -129,6 +246,10 @@ func newAuthProfilesShowCmd(a *app) *cobra.Command {
 				fmt.Fprintf(out, "Login URL: %s\n", summary.LoginURL)
 				fmt.Fprintf(out, "Username field: %s\n", summary.UsernameField)
 				fmt.Fprintf(out, "Password field: %s\n", summary.PasswordField)
+			}
+			if summary.StartURL != "" {
+				fmt.Fprintf(out, "Start URL (discovery): %s\n", summary.StartURL)
+				fmt.Fprintln(out, "Login page/form/fields: discovered automatically at authenticate time -- see \"scanner auth discover\" to preview this without authenticating")
 			}
 			fmt.Fprintln(out, "\nCredentials (values never shown):")
 			printSecretStatus(out, "Username", summary.HasUsername)

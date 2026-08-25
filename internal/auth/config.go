@@ -52,8 +52,8 @@ func ResolveProfile(pc ProfileConfig) (Profile, error) {
 		errs = append(errs, errors.New("auth: profile name must not be empty"))
 	}
 	if !pc.Type.Valid() {
-		errs = append(errs, fmt.Errorf("auth: profile %q: unknown authentication type %q (want one of %q, %q, %q, %q)",
-			pc.Name, pc.Type, TypeFormLogin, TypeCookie, TypeBearerToken, TypeHeader))
+		errs = append(errs, fmt.Errorf("auth: profile %q: unknown authentication type %q (want one of %q, %q, %q, %q, %q)",
+			pc.Name, pc.Type, TypeFormLogin, TypeCookie, TypeBearerToken, TypeHeader, TypeFormLoginAuto))
 		// The type-specific branches below all assume a known Type;
 		// bail out early rather than compounding one real error with
 		// a wall of misleading "field required" noise for a type that
@@ -79,6 +79,8 @@ func ResolveProfile(pc ProfileConfig) (Profile, error) {
 	switch pc.Type {
 	case TypeFormLogin:
 		resolveFormLogin(pc, &p, &errs)
+	case TypeFormLoginAuto:
+		resolveFormLoginAuto(pc, &p, &errs)
 	case TypeCookie:
 		resolveCookie(pc, &p, &errs)
 	case TypeBearerToken:
@@ -133,6 +135,45 @@ func resolveFormLogin(pc ProfileConfig, p *Profile, errs *[]error) {
 	p.SuccessURLContains = pc.SuccessURLContains
 	p.SuccessTextContains = pc.SuccessTextContains
 	p.FailureTextContains = pc.FailureTextContains
+}
+
+// resolveFormLoginAuto resolves a TypeFormLoginAuto profile -- the
+// same username/password credential resolution resolveFormLogin
+// performs, but with StartURL (not LoginURL) as the required location
+// hint: any reachable same-origin page, since discover.go finds the
+// actual login page/form/field names at authenticate-time rather than
+// requiring them here. UsernameField/PasswordField/ExtraFields/
+// Success*/FailureTextContains are deliberately NOT resolved here --
+// this type has no operator-configured equivalents for them (they're
+// discovered), and Profile's own zero values for those fields are
+// exactly right until AutoFormLoginProvider fills them in post-discovery.
+func resolveFormLoginAuto(pc ProfileConfig, p *Profile, errs *[]error) {
+	if strings.TrimSpace(pc.StartURL) == "" {
+		*errs = append(*errs, errors.New("start_url is required for type \"form_login_auto\""))
+	} else {
+		u, err := url.Parse(pc.StartURL)
+		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			*errs = append(*errs, fmt.Errorf("start_url %q is not a valid absolute http(s) URL", pc.StartURL))
+		} else {
+			p.StartURL = u
+			p.Host = u.Hostname()
+		}
+	}
+	if pc.ScopeHost != "" {
+		// Same override precedent as resolveFormLogin's own ScopeHost
+		// handling -- e.g. discovery starts on one host but the login
+		// flow is known to establish a session valid on a different one.
+		p.Host = pc.ScopeHost
+	}
+
+	username, uOK := lookupEnv(pc.UsernameEnv, "username_env", errs)
+	password, pOK := lookupEnv(pc.PasswordEnv, "password_env", errs)
+	if uOK {
+		p.Username = username
+	}
+	if pOK {
+		p.Password = password
+	}
 }
 
 func resolveCookie(pc ProfileConfig, p *Profile, errs *[]error) {

@@ -49,26 +49,69 @@ DVWA's login is a plain HTML form at `/login.php` with fields
 `username`, `password`, `Login` (submit), and a `user_token` CSRF
 field sakanner's own existing form-reconstruction/authenticated-
 crawling machinery (Phase 3.14/3.15) already handles generically — no
-DVWA-specific code exists or is needed in sakanner itself.
+DVWA-specific code exists or is needed in sakanner itself. Credentials
+are always supplied via environment-variable references, never
+written directly into the YAML.
+
+**Simplest: automatic discovery (Phase 3.36)** — no need to know the
+exact login URL or field names; a `start_url` anywhere on the app is
+enough:
 
 ```yaml
 # config.yaml
-auth:
+storage:
+  dsn: sakanner.db
+scope:
+  allow_reserved_ranges: true
+authentication:
   profiles:
     - name: dvwa
-      type: form
-      login_url: "http://localhost:4280/login.php"
-      username_field: username
-      password_field: password
-      username: admin
-      password: password
+      type: form_login_auto
+      start_url: "http://localhost:4280/DVWA/"
+      username_env: DVWA_USERNAME
+      password_env: DVWA_PASSWORD
 identities:
-  - name: dvwa-admin
-    profile: dvwa
+  identities:
+    - name: dvwa-admin
+      auth_profile: dvwa
+      username_env: DVWA_USERNAME
+      password_env: DVWA_PASSWORD
 ```
 
+Preview what discovery finds first, with no credentials needed:
+
 ```bash
-scanner scan localhost --ports 4280 --profile web --identity dvwa-admin
+scanner --config config.yaml auth discover http://localhost:4280/DVWA/
+```
+
+**Or explicit configuration**, if you already know the exact login
+URL and field names:
+
+```yaml
+authentication:
+  profiles:
+    - name: dvwa
+      type: form_login
+      login_url: "http://localhost:4280/DVWA/login.php"
+      username_field: username
+      password_field: password
+      username_env: DVWA_USERNAME
+      password_env: DVWA_PASSWORD
+identities:
+  identities:
+    - name: dvwa-admin
+      auth_profile: dvwa
+      username_env: DVWA_USERNAME
+      password_env: DVWA_PASSWORD
+```
+
+Either way:
+
+```bash
+export DVWA_USERNAME=admin
+export DVWA_PASSWORD=password
+scanner --config config.yaml scope add localhost
+scanner --config config.yaml scan localhost --ports 4280 --profile web --identity dvwa-admin
 ```
 
 ## 4. Coverage mapping — honest, per-vulnerability-class

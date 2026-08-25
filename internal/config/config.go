@@ -165,8 +165,12 @@ type AuthenticationConfig struct {
 // persisted as plaintext."
 type AuthProfileConfig struct {
 	Name string `mapstructure:"name"`
-	// Type selects the authentication mechanism: "form_login", "cookie",
-	// "bearer_token", or "header" -- validated structurally in
+	// Type selects the authentication mechanism: "form_login",
+	// "form_login_auto" (Phase 3.36: the same conventional HTML form
+	// login, but with the login page/form/field names discovered
+	// automatically from a start_url instead of operator-configured --
+	// see internal/auth.TypeFormLoginAuto), "cookie", "bearer_token",
+	// or "header" -- validated structurally in
 	// Validate() below (a known type, required type-specific fields
 	// present); the referenced env vars themselves are resolved lazily,
 	// only when a profile is actually used (internal/auth.ResolveProfile),
@@ -185,6 +189,11 @@ type AuthProfileConfig struct {
 	SuccessURLContains  string `mapstructure:"success_url_contains"`
 	SuccessTextContains string `mapstructure:"success_text_contains"`
 	FailureTextContains string `mapstructure:"failure_text_contains"`
+
+	// form_login_auto fields -- see internal/auth.TypeFormLoginAuto's
+	// own doc comment. Any reachable same-origin page on the target
+	// app, not necessarily the exact login page.
+	StartURL string `mapstructure:"start_url"`
 
 	// cookie fields.
 	CookieEnv string `mapstructure:"cookie_env"`
@@ -424,6 +433,10 @@ func (a AuthenticationConfig) Validate() error {
 			if p.LoginURL == "" || p.UsernameEnv == "" || p.PasswordEnv == "" {
 				return fmt.Errorf("authentication.profiles[%s]: type \"form_login\" requires login_url, username_env, and password_env", p.Name)
 			}
+		case "form_login_auto":
+			if p.StartURL == "" || p.UsernameEnv == "" || p.PasswordEnv == "" {
+				return fmt.Errorf("authentication.profiles[%s]: type \"form_login_auto\" requires start_url, username_env, and password_env", p.Name)
+			}
 		case "cookie":
 			if p.CookieEnv == "" || p.ScopeHost == "" {
 				return fmt.Errorf("authentication.profiles[%s]: type \"cookie\" requires cookie_env and scope_host", p.Name)
@@ -437,7 +450,7 @@ func (a AuthenticationConfig) Validate() error {
 				return fmt.Errorf("authentication.profiles[%s]: type \"header\" requires header_name, header_value_env, and scope_host", p.Name)
 			}
 		default:
-			return fmt.Errorf("authentication.profiles[%s]: type: invalid type %q (want \"form_login\", \"cookie\", \"bearer_token\", or \"header\")", p.Name, p.Type)
+			return fmt.Errorf("authentication.profiles[%s]: type: invalid type %q (want \"form_login\", \"form_login_auto\", \"cookie\", \"bearer_token\", or \"header\")", p.Name, p.Type)
 		}
 		if p.MaxRedirects < 0 {
 			return fmt.Errorf("authentication.profiles[%s]: max_redirects must not be negative", p.Name)

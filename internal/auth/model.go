@@ -19,13 +19,28 @@ const (
 	TypeCookie      Type = "cookie"
 	TypeBearerToken Type = "bearer_token"
 	TypeHeader      Type = "header"
+	// TypeFormLoginAuto is Phase 3.36's own addition: the same
+	// conventional username/password HTML form login form_login
+	// performs, except the login page/form/field names are DISCOVERED
+	// automatically (see discover.go) instead of operator-configured.
+	// An operator supplies only a StartURL (any reachable same-origin
+	// page on the target app -- not necessarily the exact login page)
+	// plus credentials; everything else form_login requires explicitly
+	// (LoginURL, UsernameField, PasswordField) is found at
+	// authenticate-time instead. Deliberately its own Type rather than
+	// an "auto-detect" flag bolted onto TypeFormLogin: the two have
+	// different required config fields (StartURL vs. LoginURL) and
+	// different Provider implementations, and keeping them distinct
+	// types means an existing form_login profile's behavior can never
+	// be silently altered by this addition -- see AutoFormLoginProvider.
+	TypeFormLoginAuto Type = "form_login_auto"
 )
 
 // Valid reports whether t is one of this build's known authentication
 // types.
 func (t Type) Valid() bool {
 	switch t {
-	case TypeFormLogin, TypeCookie, TypeBearerToken, TypeHeader:
+	case TypeFormLogin, TypeCookie, TypeBearerToken, TypeHeader, TypeFormLoginAuto:
 		return true
 	default:
 		return false
@@ -100,6 +115,14 @@ type ProfileConfig struct {
 	SuccessTextContains string // response body must contain this substring
 	FailureTextContains string // response body must NOT contain this substring
 
+	// FORM_LOGIN_AUTO fields. StartURL is the ONLY location hint this
+	// type requires -- any reachable same-origin page on the target
+	// application, not necessarily the login page itself (discovery
+	// looks there first, then follows a bounded number of same-origin
+	// "login-like" links if the start page itself has no password
+	// field). UsernameEnv/PasswordEnv above are reused unchanged.
+	StartURL string
+
 	// COOKIE fields.
 	CookieEnv string // env var holding a raw "name=value; name2=value2" Cookie header
 
@@ -158,11 +181,14 @@ type Profile struct {
 	HeaderValue  string
 	CookieHeader string
 
-	// FORM_LOGIN fields.
+	// FORM_LOGIN fields. For TypeFormLoginAuto, LoginURL/UsernameField/
+	// PasswordField all start unset and are only known once discovery
+	// completes -- StartURL is the one field resolved up front.
 	LoginURL      *url.URL
 	UsernameField string
 	PasswordField string
 	ExtraFields   map[string]string
+	StartURL      *url.URL
 
 	SuccessURLContains  string
 	SuccessTextContains string

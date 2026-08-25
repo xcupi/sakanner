@@ -16,8 +16,9 @@ func newReportCmd(a *app) *cobra.Command {
 		Short: "Generate a report for a scan (JSON or Markdown)",
 		Long: `Generate a full report for one scan job: assets, hosts, DNS
 records, services, HTTP services, technologies, endpoints, inputs,
-findings, and chains -- everything "scanner status"/"findings"/
-"chains" show piecemeal, assembled into one document.`,
+and findings -- everything "scanner status"/"findings" show
+piecemeal, assembled into one document. Vulnerability chains are NOT
+included -- use "scanner chains --scan <scan-id>" separately.`,
 		Example: `  scanner report --scan <scan-id>
   scanner report --scan <scan-id> --format json
   scanner report --scan <scan-id> --format json --output report.json`,

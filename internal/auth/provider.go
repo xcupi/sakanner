@@ -36,6 +36,8 @@ func NewProvider(p Profile) (Provider, error) {
 	switch p.Type {
 	case TypeFormLogin:
 		return &FormLoginProvider{Profile: p}, nil
+	case TypeFormLoginAuto:
+		return &AutoFormLoginProvider{Profile: p}, nil
 	case TypeCookie, TypeBearerToken, TypeHeader:
 		return &StaticProvider{Profile: p}, nil
 	default:

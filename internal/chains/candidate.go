@@ -129,7 +129,14 @@ func buildCandidates(relations []FindingRelation, views map[string]findingView, 
 				continue
 			}
 			if v.endpoint != "" {
-				endpoints[v.endpoint] = true
+				// displayEndpoint, not the raw v.endpoint (endpointKey,
+				// \x1f-joined for exact-match comparison only) -- this
+				// field is read solely for human display by "chains
+				// show" (cmd/scanner/chains.go), so it must never leak
+				// the internal separator byte, matching the same fix
+				// already applied to relation evidence Detail text
+				// (Phase 3.31, see displayEndpoint's own doc comment).
+				endpoints[displayEndpoint(v.finding)] = true
 			}
 			vulnTypes[normalizeType(v.finding.VulnerabilityType)] = true
 			if !identitySet {

@@ -121,10 +121,13 @@ The scan output's "Inputs:"/"Detection:" blocks always explain what
 actually happened for that specific run -- see "scanner inputs
 <scan-id>" for the full discovered-input list.
 
-Authentication (see docs/phase-3-14-authentication.md,
+Authentication (see docs/manual.md AUTHENTICATION,
 docs/phase-3-16-multi-identity.md, docs/phase-3-24-authorization.md):
   --auth-profile <name>    authenticate using a configured profile --
-                            see "scanner auth profiles list"
+                            see "scanner auth profiles list". A
+                            "form_login_auto" profile needs only a
+                            start_url (no login_url/field names) --
+                            see "scanner auth discover --help"
   --identity <name>        authenticate as a configured identity
                             instead (mutually exclusive with
                             --auth-profile) -- see "scanner identities
@@ -391,6 +394,24 @@ func authenticateForIdentity(cmd *cobra.Command, a *app, identityName string) (*
 	return sess, authErr
 }
 
+// buildAuthDependencies loads the currently-persisted scope rules and
+// builds the scope.Validator/safedial.Dialer pair every authentication
+// path needs -- factored out of performAuthentication so "scanner auth
+// discover" (auth.go) can build the identical, scope-safe dependencies
+// without duplicating this construction. One source of truth: the SAME
+// currently-persisted scope rules (a.store.ScopeRules().List) the
+// orchestrator's own SCOPE stage would separately load moments later
+// for a real scan.
+func buildAuthDependencies(cmd *cobra.Command, a *app) (auth.Dependencies, error) {
+	rules, err := a.store.ScopeRules().List(cmd.Context())
+	if err != nil {
+		return auth.Dependencies{}, &exitCodeErr{code: exitGenericError, err: fmt.Errorf("loading scope rules for authentication: %w", err)}
+	}
+	validator := scope.NewValidator(rules, a.cfg.Scope.AllowReservedRanges)
+	dialer := safedial.New(validator, dns.New(a.cfg.DNS.Timeout))
+	return auth.Dependencies{Dialer: dialer, Validator: validator}, nil
+}
+
 // performAuthentication is the ONE place this codebase actually
 // performs a login/setup network attempt -- shared by both the bare
 // --auth-profile path (Phase 3.14/3.15, unchanged) and the --identity
@@ -402,12 +423,10 @@ func authenticateForIdentity(cmd *cobra.Command, a *app, identityName string) (*
 // authentication-only scope mechanism. label is used only for the
 // printed progress messages (never a secret).
 func performAuthentication(cmd *cobra.Command, a *app, profile auth.Profile, label string) (*auth.Session, error) {
-	rules, err := a.store.ScopeRules().List(cmd.Context())
+	deps, err := buildAuthDependencies(cmd, a)
 	if err != nil {
-		return nil, &exitCodeErr{code: exitGenericError, err: fmt.Errorf("loading scope rules for authentication: %w", err)}
+		return nil, err
 	}
-	validator := scope.NewValidator(rules, a.cfg.Scope.AllowReservedRanges)
-	dialer := safedial.New(validator, dns.New(a.cfg.DNS.Timeout))
 
 	provider, err := auth.NewProvider(profile)
 	if err != nil {
@@ -415,7 +434,7 @@ func performAuthentication(cmd *cobra.Command, a *app, profile auth.Profile, lab
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Authenticating with %s (host: %s)...\n", label, profile.Host)
-	sess, authErr := provider.Authenticate(cmd.Context(), auth.Dependencies{Dialer: dialer, Validator: validator})
+	sess, authErr := provider.Authenticate(cmd.Context(), deps)
 	if authErr != nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "Authentication FAILED for %s: %v\n", label, authErr)
 		return sess, &exitCodeErr{code: exitAuthFailed, err: authErr}

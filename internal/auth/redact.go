@@ -23,6 +23,7 @@ type ProfileSummary struct {
 	Type           Type
 	Host           string
 	LoginURL       string // safe: a URL, not a secret -- userinfo is still stripped defensively, see Redacted below
+	StartURL       string // TypeFormLoginAuto only -- the discovery starting point; empty for every other type
 	UsernameField  string
 	PasswordField  string
 	HasUsername    bool
@@ -44,11 +45,18 @@ func (p Profile) Redacted() ProfileSummary {
 		u.User = nil // defense in depth: strip any userinfo even though ResolveProfile never sets one from a secret
 		loginURL = u.String()
 	}
+	startURL := ""
+	if p.StartURL != nil {
+		u := *p.StartURL
+		u.User = nil
+		startURL = u.String()
+	}
 	return ProfileSummary{
 		Name:           p.Name,
 		Type:           p.Type,
 		Host:           p.Host,
 		LoginURL:       loginURL,
+		StartURL:       startURL,
 		UsernameField:  p.UsernameField,
 		PasswordField:  p.PasswordField,
 		HasUsername:    p.Username != "",

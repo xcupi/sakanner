@@ -84,6 +84,36 @@ func (fp *FormLoginProvider) Authenticate(ctx context.Context, deps Dependencies
 		return failSession(sess, fmt.Errorf("auth: profile %q: login form action %q: %w", p.Name, form.Action, err))
 	}
 
+	// 4-9. Submit credentials, follow redirects, evaluate success --
+	// shared with AutoFormLoginProvider (discover.go), which reaches
+	// this exact same point via discovery instead of a configured
+	// LoginURL. originHost is p.LoginURL.Hostname() here specifically
+	// (not e.g. getResp.Request.URL.Hostname(), which could differ if
+	// the login page itself redirected) to keep this call byte-for-byte
+	// equivalent to this function's own pre-refactor behavior.
+	return submitCredentials(ctx, deps, p, client, jar, p.LoginURL.Hostname(), form, actionURL, sess)
+}
+
+// submitCredentials performs task section 4's steps 4-9: fill in the
+// username/password (and any operator-configured ExtraFields) on top
+// of form's own already-captured fields (hidden CSRF tokens and
+// anything else the page pre-filled survive untouched), submit via
+// client (whose CheckRedirect already re-validates scope on every
+// redirect hop -- see safedial's own doc comment), and evaluate
+// whether the result actually looks like a successful login. Shared
+// by FormLoginProvider (form.go, after ITS OWN fetch+parse of a
+// configured LoginURL) and AutoFormLoginProvider (discover.go, after
+// discovery's own fetch+parse) so the submission/evaluation logic
+// itself is never duplicated -- only how form/actionURL/originHost
+// were obtained differs between the two callers.
+//
+// originHost is the host actionURL is compared against for the
+// "did this form's own action silently point somewhere out of scope"
+// check -- FormLoginProvider passes its configured LoginURL's host;
+// AutoFormLoginProvider passes the host of the page discovery actually
+// found the form on (which may differ from its own StartURL if
+// discovery followed a same-origin login link first).
+func submitCredentials(ctx context.Context, deps Dependencies, p Profile, client *http.Client, jar *cookiejar.Jar, originHost string, form loginForm, actionURL *url.URL, sess *Session) (*Session, error) {
 	// Explicit, fast, clearly-worded scope check on the form's action
 	// host BEFORE submitting anything (task section 8's "form action
 	// outside scope") -- defense in depth on top of the dial-level
@@ -91,7 +121,7 @@ func (fp *FormLoginProvider) Authenticate(ctx context.Context, deps Dependencies
 	// one this client was built for (see safedial's package doc): this
 	// check exists so an out-of-scope form action fails with a message
 	// naming the actual problem, not a generic dial error.
-	if !strings.EqualFold(actionURL.Hostname(), p.LoginURL.Hostname()) {
+	if !strings.EqualFold(actionURL.Hostname(), originHost) {
 		decision, decErr := deps.Validator.CheckHost(ctx, actionURL.Hostname())
 		if decErr != nil || !decision.Allowed {
 			return failSession(sess, fmt.Errorf("auth: profile %q: login form action host %q is out of scope", p.Name, actionURL.Hostname()))
@@ -121,6 +151,7 @@ func (fp *FormLoginProvider) Authenticate(ctx context.Context, deps Dependencies
 		method = http.MethodPost
 	}
 	var postReq *http.Request
+	var err error
 	if method == http.MethodGet {
 		actionURL.RawQuery = values.Encode()
 		postReq, err = http.NewRequestWithContext(ctx, http.MethodGet, actionURL.String(), nil)

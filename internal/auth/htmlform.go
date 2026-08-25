@@ -21,6 +21,27 @@ type loginForm struct {
 	Method      string
 	Fields      map[string]string // every named input/textarea/select field found, with its ORIGINAL value (hidden CSRF tokens survive here unless overwritten by the caller)
 	HasPassword bool              // true if any <input type="password"> was found in this form
+	// InputMeta additionally captures, for every <input> element also
+	// present in Fields, the metadata discover.go's login-form/
+	// username-field scoring heuristics need (type/autocomplete/id and
+	// any associated <label for="id">'s text). Populated unconditionally
+	// by extractLoginForm (one extra pass over the form's own children,
+	// bounded by the same page-size limit every caller already reads
+	// under) but only ever READ by discover.go -- the existing
+	// form_login path (FormLoginProvider, unchanged) only ever reads
+	// Action/Method/Fields/HasPassword, exactly as before this field
+	// was added.
+	InputMeta []inputMeta
+}
+
+// inputMeta is one <input>'s discovery-relevant metadata. Order matches
+// document order, which discover.go's tie-breaking relies on.
+type inputMeta struct {
+	Name         string
+	Type         string // the input's own "type" attribute, lowercased ("text" if absent)
+	Autocomplete string // lowercased "autocomplete" attribute, if any
+	ID           string
+	Label        string // associated <label for="id">'s text content, if any (empty if none)
 }
 
 // findLoginForm parses body (the login page's HTML) and returns the
@@ -38,6 +59,26 @@ func findLoginForm(body []byte, base *url.URL) (loginForm, error) {
 		return loginForm{}, fmt.Errorf("auth: parse login page HTML: %w", err)
 	}
 
+	forms := parseForms(doc, base)
+	if len(forms) == 0 {
+		return loginForm{}, fmt.Errorf("auth: no <form> found on the login page")
+	}
+	for _, f := range forms {
+		if f.HasPassword {
+			return f, nil
+		}
+	}
+	return forms[0], nil
+}
+
+// parseForms returns every <form> found in doc, extracted via
+// extractLoginForm -- factored out of findLoginForm above so
+// discover.go's own multi-form scoring (it needs every form on a page,
+// not just findLoginForm's own single "first form with a password, or
+// else the first form" pick) can reuse the exact same walk/extraction
+// logic rather than a second, separately-maintained implementation.
+// findLoginForm's own external behavior is unchanged by this split.
+func parseForms(doc *html.Node, base *url.URL) []loginForm {
 	var forms []loginForm
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -53,16 +94,7 @@ func findLoginForm(body []byte, base *url.URL) (loginForm, error) {
 		}
 	}
 	walk(doc)
-
-	if len(forms) == 0 {
-		return loginForm{}, fmt.Errorf("auth: no <form> found on the login page")
-	}
-	for _, f := range forms {
-		if f.HasPassword {
-			return f, nil
-		}
-	}
-	return forms[0], nil
+	return forms
 }
 
 func extractLoginForm(form *html.Node, base *url.URL) loginForm {
@@ -78,7 +110,10 @@ func extractLoginForm(form *html.Node, base *url.URL) loginForm {
 		method = "GET"
 	}
 
+	labels := collectLabels(form)
+
 	fields := map[string]string{}
+	var metas []inputMeta
 	hasPassword := false
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -94,6 +129,16 @@ func extractLoginForm(form *html.Node, base *url.URL) loginForm {
 					if typ == "password" {
 						hasPassword = true
 					}
+					id, _ := attr(n, "id")
+					autocomplete, _ := attr(n, "autocomplete")
+					metaType := typ
+					if metaType == "" {
+						metaType = "text" // matches the browser default for <input> with no type attribute
+					}
+					metas = append(metas, inputMeta{
+						Name: name, Type: metaType, Autocomplete: strings.ToLower(strings.TrimSpace(autocomplete)),
+						ID: id, Label: labels[id],
+					})
 				}
 				return
 			case "textarea":
@@ -116,7 +161,33 @@ func extractLoginForm(form *html.Node, base *url.URL) loginForm {
 		walk(child)
 	}
 
-	return loginForm{Action: action, Method: strings.ToUpper(method), Fields: fields, HasPassword: hasPassword}
+	return loginForm{Action: action, Method: strings.ToUpper(method), Fields: fields, HasPassword: hasPassword, InputMeta: metas}
+}
+
+// collectLabels walks form's entire subtree and returns a map of
+// "for" attribute -> the referenced <label>'s own text content, for
+// every <label for="..."> found. Labels can appear anywhere within the
+// form relative to the input they describe (before, after, unrelated
+// document order), so this is deliberately a separate, complete pass
+// over the form rather than something threaded through the single
+// forward walk in extractLoginForm above.
+func collectLabels(form *html.Node) map[string]string {
+	labels := map[string]string{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "label" {
+			if forAttr, ok := attr(n, "for"); ok && forAttr != "" {
+				if text := textNodeContent(n); text != "" {
+					labels[forAttr] = text
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(form)
+	return labels
 }
 
 func attr(n *html.Node, name string) (string, bool) {

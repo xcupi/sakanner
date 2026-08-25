@@ -71,7 +71,7 @@ scanner --config config.yaml report --scan <scan-id> --format markdown
 scanner --config config.yaml report --scan <scan-id> --format json --output report.json
 ```
 
-See [docs/operator-guide.md](docs/operator-guide.md) for authenticated/multi-identity scanning and other scenarios. Run `scanner <command> --help` for the full flag reference and examples of any subcommand — `scanner scan --help`, `scanner detectors list`, and `scanner profiles list` are the most useful starting points. To check which optional external tools are installed and which backend each pluggable stage is configured to use, run `scanner tools status` (see [External tool integrations](#external-tool-integrations)).
+See [docs/manual.md](docs/manual.md) for the full command-by-command reference (a Linux-man-page-style manual: every command's purpose, flags, defaults, exit codes, and verified examples) and [docs/operator-guide.md](docs/operator-guide.md) for authenticated/multi-identity scanning and other scenario walkthroughs. Run `scanner <command> --help` for the same reference embedded in the binary itself — `scanner scan --help`, `scanner detectors list`, and `scanner profiles list` are the most useful starting points. To check which optional external tools are installed and which backend each pluggable stage is configured to use, run `scanner tools status` (see [External tool integrations](#external-tool-integrations)).
 
 There is also a legacy, recon-only path (`scanner target add` + `scanner scan --target <id>`) that predates the above and never runs detection — see `scanner target --help`. New usage should prefer `scanner scan <target>` directly.
 
@@ -93,10 +93,33 @@ internal/
   crawler/          same-origin web crawler + endpoint discovery (native or katana)
   endpoints/        normalizes crawl output into Endpoint records
   safedial/         shared scope-safe HTTP dialing used by http/ and crawler/
-  orchestration/    wires every stage into the scan pipeline
+  orchestration/    legacy recon-only pipeline (the "scanner scan --target <id>" path)
+  orchestrator/     the full-pipeline orchestrator "scanner scan <target>" actually
+                    runs: scope, recon, crawl, detection, correlation, chains, risk,
+                    evidence, in one ordered set of stages
+  parameters/       discovers/classifies query, form, path, and JSON application
+                    inputs from crawl output
+  detection/        the detector-execution engine (registry, target-building,
+                    mutation bridge, finding persistence) that every detector in
+                    internal/detectors/ runs under
+  detectors/        the vulnerability detectors themselves (one package per
+                    detector) -- see "scanner detectors list" for the live registry
+  mutation/         the request-mutation primitives (query/form/JSON/path/header/
+                    cookie locations, safe execution) active detectors are built on
+  correlation/      deduplicates raw findings into one canonical finding per
+                    distinct vulnerability
+  chains/           relates DIFFERENT findings into candidate vulnerability chains,
+                    with per-scan/per-identity isolation (see docs/manual.md CHAINS)
+  evidence/         builds/redacts the structured evidence attached to each finding
+  risk/             risk scoring for canonical findings
   reporting/        JSON + Markdown report generation
-  parameters/, detection/, validation/, evidence/, correlation/, findings/
-                    stubs for not-yet-implemented future-phase stages
+  auth/             authentication profiles, identities, session/cookie handling
+  storage/          repository interfaces; storage/sqlite is the concrete SQLite backend
+  policy/           the recon/web/deep scan profiles (see "scanner profiles")
+  findings/         reserved for future finding-lifecycle logic; not implemented (stub only)
+  validation/       reserved for future non-destructive proof-of-vulnerability checks;
+                    not implemented (stub only) -- detectors implement their own proof
+                    strategies directly today (see internal/detectors/)
 pkg/
   models/           shared data types (Target, ScanJob, Finding, ...)
   plugins/          shared external-tool plumbing: detection, the
@@ -104,7 +127,8 @@ pkg/
                     subprocess runner (see External tool integrations)
   utilities/        small shared helpers
 tests/e2e/          full CLI-driven end-to-end tests
-docs/               design notes and test reports (see below)
+lab/                the local test laboratory (see below)
+docs/               design notes, the full manual (docs/manual.md), and test reports
 configs/            example configuration
 ```
 
@@ -148,6 +172,7 @@ See [lab/README.md](lab/README.md) for a quick start and [docs/phase-2-test-lab.
 - [docs/operator-guide.md](docs/operator-guide.md) — operator-facing workflow guide: unauthenticated/authenticated/multi-identity scanning, viewing findings/chains, safe manual reproduction.
 - [docs/phase-3-33-active-detection-coverage-review.md](docs/phase-3-33-active-detection-coverage-review.md) — current, evidence-based inventory of every detector, what it covers, and known limitations.
 - [docs/phase-3-34-cli-ux.md](docs/phase-3-34-cli-ux.md) — this phase's CLI/operator UX audit and changes.
+- [docs/phase-3-36-auth-discovery.md](docs/phase-3-36-auth-discovery.md) — automatic login-form discovery (`form_login_auto`, `scanner auth discover`): design, safety analysis, and real DVWA validation.
 - The remaining `docs/phase-3-*.md` files are historical per-phase build/acceptance reports, most recent last by number.
 
 ## Roadmap

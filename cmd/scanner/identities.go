@@ -141,6 +141,9 @@ func newIdentitiesShowCmd(a *app) *cobra.Command {
 			if summary.LoginURL != "" {
 				fmt.Fprintf(out, "Login URL: %s\n", summary.LoginURL)
 			}
+			if summary.StartURL != "" {
+				fmt.Fprintf(out, "Start URL (discovery): %s\n", summary.StartURL)
+			}
 			fmt.Fprintln(out, "\nCredentials (values never shown):")
 			printSecretStatus(out, "Username", summary.HasUsername)
 			printSecretStatus(out, "Password", summary.HasPassword)

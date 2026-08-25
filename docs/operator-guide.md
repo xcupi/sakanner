@@ -82,6 +82,31 @@ scanner --config config.yaml auth profiles list
 scanner --config config.yaml identities list
 ```
 
+**Don't know the exact login URL or field names?** Use
+`type: form_login_auto` with a `start_url` (any page on the app, e.g.
+its root) instead of `login_url`/`username_field`/`password_field` —
+sakanner discovers the real login form itself:
+
+```yaml
+authentication:
+  profiles:
+    - name: lab-login
+      type: form_login_auto
+      start_url: "http://203.0.113.10/"
+      username_env: SAKANNER_USER
+      password_env: SAKANNER_PASS
+```
+
+Preview what discovery would find before configuring anything, with
+no credentials required:
+
+```bash
+scanner --config config.yaml auth discover http://203.0.113.10/
+```
+
+See `docs/manual.md`'s AUTHENTICATION section for exactly how
+discovery works and its limitations.
+
 ## Scenario 3: Multi-identity scan
 
 Define two identities sharing one login profile:
