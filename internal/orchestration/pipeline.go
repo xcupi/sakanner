@@ -78,6 +78,16 @@ type Pipeline struct {
 	CrawlEnabled  bool
 	CrawlMaxDepth int
 	CrawlMaxPages int
+	// CrawlStartPath is the path crawling begins from, instead of the
+	// target's own root "/" -- general-purpose support for an
+	// application hosted under a subpath (e.g. "/DVWA/") that the site
+	// root has no link into. Empty means "/", exactly this field's own
+	// zero value and exactly every prior phase's behavior -- exported
+	// here as its own field (default "/") rather than resolved by every
+	// caller, since crawl.Crawl's own startPath parameter (crawler.go)
+	// already existed and only ever received a hardcoded "/" before
+	// this field gave it a real, configurable source.
+	CrawlStartPath string
 
 	// ParameterLimits bounds Phase 3.13 input discovery -- gated by the
 	// SAME CrawlEnabled flag above (task's "PROFILE INTERACTION: input
@@ -748,7 +758,11 @@ func (p *Pipeline) crawlAndDiscoverEndpoints(ctx context.Context, scanJobID stri
 				identityName = p.AuthSession.IdentityName
 			}
 
-			pages, err := crawl.Crawl(gctx, target.ip, target.port, target.hostname, target.scheme, "/", crawler.Options{
+			startPath := p.CrawlStartPath
+			if startPath == "" {
+				startPath = "/"
+			}
+			pages, err := crawl.Crawl(gctx, target.ip, target.port, target.hostname, target.scheme, startPath, crawler.Options{
 				MaxDepth:     p.CrawlMaxDepth,
 				MaxPages:     p.CrawlMaxPages,
 				Timeout:      p.HTTPConfig.Timeout,

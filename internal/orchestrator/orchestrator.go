@@ -108,6 +108,15 @@ type CrawlSettings struct {
 	MaxDepth        int
 	MaxPages        int
 	ParameterLimits parameters.Limits
+	// StartPath is the path crawling begins from instead of the
+	// target's own root "/" -- see orchestration.Pipeline.CrawlStartPath's
+	// own doc comment. Empty means "/", unchanged from every prior
+	// phase's behavior. The caller (cmd/scanner) is responsible for
+	// resolving the final effective value (CLI flag, else config
+	// default, else empty) before constructing this struct, mirroring
+	// how Enabled/MaxDepth/MaxPages above are already fully resolved
+	// by the caller rather than merged here.
+	StartPath string
 }
 
 // Orchestrator sequences the full pipeline (task section 1) from a
@@ -651,6 +660,7 @@ func (o *Orchestrator) scanPipeline(override *CrawlSettings, session *auth.Sessi
 		p.CrawlMaxDepth = override.MaxDepth
 		p.CrawlMaxPages = override.MaxPages
 		p.ParameterLimits = override.ParameterLimits
+		p.CrawlStartPath = override.StartPath
 	}
 	p.AuthSession = session
 	return &p

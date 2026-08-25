@@ -107,6 +107,22 @@ scanner --config config.yaml auth discover http://203.0.113.10/
 See `docs/manual.md`'s AUTHENTICATION section for exactly how
 discovery works and its limitations.
 
+**Application mounted under a subpath (e.g. `/DVWA/`)?** By default a
+scan crawls from the target's own root `/`. If the real application
+lives under a subpath the site root has no link into at all, add
+`--start-url` so crawling (authenticated or not) actually reaches it:
+
+```bash
+scanner --config config.yaml scan 203.0.113.10 --profile web --identity operator --start-url /DVWA/
+```
+
+`--start-url` only changes where crawling begins — it's independent of
+the auth profile's own `login_url`/`start_url` above, which controls
+where the *login* flow looks for a form. It works with both
+`form_login` and `form_login_auto`, accepts a bare path or a full
+same-origin URL, and never changes scope. See `docs/manual.md`'s
+"Applications mounted under a subpath" section for details.
+
 ## Scenario 3: Multi-identity scan
 
 Define two identities sharing one login profile:

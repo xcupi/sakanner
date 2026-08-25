@@ -565,7 +565,118 @@ func (a *authApp) handler() http.Handler {
 		http.Redirect(w, r, "http://external.scanner.test/", http.StatusFound)
 	})
 
+	// /subpath-app/* is a general-purpose (never DVWA-specific) fixture
+	// for validating start-URL/base-path support: an application hosted
+	// under a subpath that "/" has no link into at all, whose own login
+	// handler additionally gates real-world-realistically on its own
+	// named submit button being present in the POST body (a common
+	// server-side idiom, e.g. PHP's own isset($_POST['do_login'])) --
+	// proving BOTH that crawling can be pointed at a subpath AND that a
+	// login form's submit-button field round-trips into the actual
+	// submission, not merely its username/password fields.
+	mux.HandleFunc("/subpath-app/", a.handleSubpathIndex)
+	mux.HandleFunc("/subpath-app/login", a.handleSubpathLogin)
+	mux.HandleFunc("/subpath-app/dashboard", a.requireSubpathSession(func(w http.ResponseWriter, r *http.Request, username string) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><body><h1>Subpath App Dashboard</h1><p>Welcome, %s.</p>
+<a href="/subpath-app/profile?section=overview">View profile</a>
+</body></html>`, username)
+	}))
+	mux.HandleFunc("/subpath-app/profile", a.requireSubpathSession(func(w http.ResponseWriter, r *http.Request, username string) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><body><p>Profile section: %s</p></body></html>`, r.URL.Query().Get("section"))
+	}))
+
 	return mux
+}
+
+const subpathAppSessionCookieName = "subpath_app_session"
+
+// handleSubpathIndex is the application's own base/index page ("/" for
+// a scan pointed at this subpath, exactly like a real application's
+// index.php at e.g. /DVWA/) -- registered as its own Go ServeMux
+// subtree pattern ("/subpath-app/") alongside the more specific exact
+// routes below, so it only ever serves the base path itself. Mirrors
+// a common real-world pattern (an unauthenticated visitor is bounced
+// to the login page; an authenticated one sees the app's own landing
+// page, which links deeper into the app) so that a crawl STARTING at
+// this base path -- rather than at a page some other test's root
+// fixture happens to link into -- can reach /subpath-app/dashboard
+// purely through the base path's own in-app links, the same way a
+// real crawl pointed at /DVWA/ reaches DVWA's own pages.
+func (a *authApp) handleSubpathIndex(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(subpathAppSessionCookieName)
+	if err != nil {
+		http.Redirect(w, r, "/subpath-app/login", http.StatusFound)
+		return
+	}
+	a.mu.Lock()
+	username, ok := a.sessions[cookie.Value]
+	a.mu.Unlock()
+	if !ok {
+		http.Redirect(w, r, "/subpath-app/login", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, `<html><body><h1>Subpath App</h1><p>Welcome, %s.</p>
+<a href="/subpath-app/dashboard">Dashboard</a>
+</body></html>`, username)
+}
+
+func (a *authApp) handleSubpathLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><form action="/subpath-app/login" method="post">
+  <input type="hidden" name="csrf_token" value="lab-fixed-csrf-token">
+  <input type="text" name="username">
+  <input type="password" name="password">
+  <input type="submit" name="do_login" value="Log In">
+</form></body></html>`)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if r.FormValue("csrf_token") != "lab-fixed-csrf-token" {
+		http.Error(w, "missing or invalid csrf token", http.StatusBadRequest)
+		return
+	}
+	// Gate real-world-realistically on the submit button's own name --
+	// a request missing it (e.g. one built by code that drops
+	// type="submit" fields) must be rejected exactly like DVWA itself
+	// rejects one, so this fixture can prove the fix rather than merely
+	// assert it.
+	if r.FormValue("do_login") == "" {
+		http.Error(w, "missing submit field", http.StatusBadRequest)
+		return
+	}
+	username, password := r.FormValue("username"), r.FormValue("password")
+	if !a.validCredentials(username, password) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, "login failed: invalid credentials")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: subpathAppSessionCookieName, Value: a.newSession(username), Path: "/"})
+	http.Redirect(w, r, "/subpath-app/dashboard", http.StatusFound)
+}
+
+func (a *authApp) requireSubpathSession(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(subpathAppSessionCookieName)
+		if err != nil {
+			http.Redirect(w, r, "/subpath-app/login", http.StatusFound)
+			return
+		}
+		a.mu.Lock()
+		username, ok := a.sessions[cookie.Value]
+		a.mu.Unlock()
+		if !ok {
+			http.Redirect(w, r, "/subpath-app/login", http.StatusFound)
+			return
+		}
+		next(w, r, username)
+	}
 }
 
 func (a *authApp) handleLogin(w http.ResponseWriter, r *http.Request) {

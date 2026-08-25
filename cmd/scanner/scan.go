@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"sakanner/internal/policy"
 	"sakanner/internal/safedial"
 	"sakanner/internal/scope"
+	targetparse "sakanner/internal/target"
 	"sakanner/pkg/models"
 )
 
@@ -49,6 +52,7 @@ func buildPipeline(a *app, portList []int) *orchestration.Pipeline {
 		CrawlEnabled:        cfg.Crawler.Enabled,
 		CrawlMaxDepth:       cfg.Crawler.MaxDepth,
 		CrawlMaxPages:       cfg.Crawler.MaxPages,
+		CrawlStartPath:      cfg.Crawler.StartPath,
 		DiscoveryBackend:    cfg.Tools.Subfinder,
 		DNSBackend:          cfg.Tools.Dnsx,
 		PortsBackend:        cfg.Tools.Naabu,
@@ -66,6 +70,7 @@ func newScanCmd(a *app) *cobra.Command {
 	var authProfileFlag string
 	var identityFlag string
 	var authzIdentityFlag string
+	var startURLFlag string
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -146,6 +151,22 @@ the session's cookies/headers to every same-origin request for that
 session's own host. Authenticated crawling NEVER expands scope --
 every request, authenticated or not, passes the same scope check.
 
+Start URL / base path (--start-url, or config's "crawler.start_path"):
+by default a scan's crawl starts at the target's own root "/". Some
+applications are instead mounted under a subpath the site root has no
+link into at all (e.g. "/DVWA/") -- --start-url points the crawl at
+that subpath instead, so its own in-app links are what get followed
+(this is independent of --auth-profile/login_url/start_url, which
+control where the LOGIN flow itself looks for a form; once
+authenticated, the crawl -- starting from --start-url if given --
+carries that session to every same-origin request, so an application
+under a subpath is reachable authenticated, not just unauthenticated).
+Accepts either a bare path ("/DVWA/") or a full http(s) URL, whose
+host must then match the scan target exactly (a mismatch is a
+pre-flight error, no network activity, no scan job created). It never
+changes scope: every request the crawl makes, starting path or not,
+still passes the same host-based scope check.
+
 See also:
   scanner profiles show <name>   one profile's exact settings
   scanner detectors list         which detectors are registered/enabled
@@ -158,11 +179,12 @@ See also:
 		Example: `  scanner scan 203.0.113.10 --profile web
   scanner scan example.com --profile deep --auth-profile lab-login
   scanner scan example.com --profile web --identity account-a
-  scanner scan example.com --profile web --identity account-a --authz-identity account-b`,
+  scanner scan example.com --profile web --identity account-a --authz-identity account-b
+  scanner scan 203.0.113.10 --profile web --auth-profile lab-login --start-url /DVWA/`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
-				return runFullScan(a, cmd, args[0], portList, scanTimeout, profileFlag, authProfileFlag, identityFlag, authzIdentityFlag)
+				return runFullScan(a, cmd, args[0], portList, scanTimeout, profileFlag, authProfileFlag, identityFlag, authzIdentityFlag, startURLFlag)
 			}
 
 			// Original, unchanged recon-only path (Phase 1): operates on
@@ -197,7 +219,60 @@ See also:
 	cmd.Flags().StringVar(&identityFlag, "identity", "", `authenticate before scanning as this configured identity -- see "scanner identities list" (mutually exclusive with --auth-profile)`)
 	cmd.MarkFlagsMutuallyExclusive("auth-profile", "identity")
 	cmd.Flags().StringVar(&authzIdentityFlag, "authz-identity", "", `authenticate a SECOND configured identity and enable horizontal authorization (IDOR/BOLA) testing against --identity's own baseline -- see "scanner identities list" (requires --identity)`)
+	cmd.Flags().StringVar(&startURLFlag, "start-url", "", `path or same-origin URL where crawling begins, instead of the target's own root "/" -- for an application hosted under a subpath (e.g. "/DVWA/") the site root has no link into (overrides "crawler.start_path" in config; no effect on the legacy --target path)`)
 	return cmd
+}
+
+// resolveScanStartPath validates and normalizes --start-url/
+// crawler.start_path (whichever produced value, already empty-checked
+// by the caller) into a bare path crawl.Crawl's own startPath
+// parameter accepts. General-purpose, application-agnostic: this
+// function has no knowledge of any specific application, only of the
+// "value must name the same host as the target being scanned" rule.
+//
+// Two accepted forms:
+//   - a bare path ("/DVWA/", "DVWA/") -- always same-origin by
+//     construction (no host was even named), normalized to start
+//     with "/".
+//   - an absolute http(s) URL ("http://host/DVWA/") -- its own host
+//     MUST match target (parsed via the same internal/target.Parse
+//     every scan target already goes through, so "203.0.113.10" and
+//     "http://203.0.113.10/..." are compared consistently); the URL's
+//     path is extracted. A mismatched host is a configuration error,
+//     reported before any network activity, exactly mirroring every
+//     other pre-flight option this function already validates this
+//     way (--authz-identity, --profile).
+//
+// value == "" is handled by the caller (means "no override, use the
+// target's own root") and never reaches this function.
+func resolveScanStartPath(rawTarget, value string) (string, error) {
+	if !strings.Contains(value, "://") {
+		p := value
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		return p, nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("--start-url %q is not a valid path or absolute http(s) URL", value)
+	}
+	targetHost, _, parseErr := targetparse.Parse(rawTarget)
+	if parseErr != nil {
+		// The target itself is invalid -- let the existing target-
+		// validation deeper in the orchestrator report that with its
+		// own established wording; this function only needed
+		// targetHost for the same-origin comparison below.
+		return "", fmt.Errorf("--start-url %q: cannot verify same-origin against target %q: %w", value, rawTarget, parseErr)
+	}
+	if !strings.EqualFold(u.Hostname(), targetHost) {
+		return "", fmt.Errorf("--start-url %q host %q does not match the scan target %q -- --start-url must be same-origin as the target being scanned", value, u.Hostname(), rawTarget)
+	}
+	p := u.Path
+	if p == "" {
+		p = "/"
+	}
+	return p, nil
 }
 
 // runFullScan implements task section 45's `scanner scan <target>`:
@@ -221,7 +296,7 @@ See also:
 // clean, distinct failure (exitAuthFailed) with no scan job ever
 // created -- exactly mirroring how an invalid --profile is handled two
 // lines above.
-func runFullScan(a *app, cmd *cobra.Command, target string, portList []int, scanTimeout time.Duration, profileFlag, authProfileFlag, identityFlag, authzIdentityFlag string) error {
+func runFullScan(a *app, cmd *cobra.Command, target string, portList []int, scanTimeout time.Duration, profileFlag, authProfileFlag, identityFlag, authzIdentityFlag, startURLFlag string) error {
 	cfg := a.cfg
 
 	// Phase 3.24: validated before ANYTHING else touches the network --
@@ -238,6 +313,20 @@ func runFullScan(a *app, cmd *cobra.Command, target string, portList []int, scan
 		if _, err := findIdentityConfig(a.cfg, authzIdentityFlag); err != nil {
 			return &exitCodeErr{code: exitAuthFailed, err: err}
 		}
+	}
+
+	// General-purpose start-URL/base-path support: --start-url, else
+	// the config default, else "/" (unchanged behavior). Resolved and
+	// validated here -- same-origin against target if a full URL was
+	// given -- before any network activity, matching every other
+	// option's own "fail fast" discipline in this function.
+	startURLValue := startURLFlag
+	if startURLValue == "" {
+		startURLValue = cfg.Crawler.StartPath
+	}
+	startPath, err := resolveScanStartPath(target, startURLValue)
+	if err != nil {
+		return &exitCodeErr{code: exitGenericError, err: err}
 	}
 
 	eff, err := policy.Resolve(profileFlag, policy.ConfigView{
@@ -330,6 +419,7 @@ func runFullScan(a *app, cmd *cobra.Command, target string, portList []int, scan
 		CrawlOverride: &orchestrator.CrawlSettings{
 			Enabled: eff.CrawlEnabled, MaxDepth: eff.CrawlMaxDepth, MaxPages: eff.CrawlMaxPages,
 			ParameterLimits: parameters.Limits{MaxInputsPerEndpoint: eff.MaxInputsPerEndpoint, MaxTotalInputs: eff.MaxTotalInputs},
+			StartPath:       startPath,
 		},
 		AuthSession: authSession,
 	})

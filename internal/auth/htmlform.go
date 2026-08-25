@@ -123,7 +123,19 @@ func extractLoginForm(form *html.Node, base *url.URL) loginForm {
 				name, ok := attr(n, "name")
 				typ, _ := attr(n, "type")
 				typ = strings.ToLower(strings.TrimSpace(typ))
-				if ok && name != "" && typ != "submit" && typ != "button" && typ != "image" && typ != "reset" && typ != "file" {
+				// type="submit" IS included (unlike button/image/reset/file
+				// below): a real browser submits the CLICKED submit
+				// button's own name=value pair alongside every other
+				// field, and some applications gate their own login
+				// processing on that name being present in the POST body
+				// (a common server-side idiom -- e.g. PHP's own
+				// isset($_POST['Login'])) -- omitting it here would submit
+				// a request no real browser ever sends, and would be
+				// silently ignored by any application that gates on it.
+				// "button"/"image"/"reset"/"file" remain excluded: no
+				// default submission value, no reliable default value, or
+				// (file) cannot be automated at all.
+				if ok && name != "" && typ != "button" && typ != "image" && typ != "reset" && typ != "file" {
 					value, _ := attr(n, "value")
 					fields[name] = value
 					if typ == "password" {

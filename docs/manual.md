@@ -146,7 +146,7 @@ discovered under it.
 
 ```
 scanner scan <target> [--profile recon|web|deep] [--ports <list>]
-               [--timeout <duration>]
+               [--timeout <duration>] [--start-url <path-or-url>]
                [--auth-profile <name> | --identity <name> [--authz-identity <name>]]
 
 scanner scan --target <id> [--target <id> ...] [--ports <list>]   # legacy, recon-only
@@ -172,6 +172,10 @@ scanner scan --target <id> [--target <id> ...] [--ports <list>]   # legacy, reco
   and [IDENTITIES](#identities). An invalid profile/identity or a
   failed login fails the command immediately (exit code 5), before any
   scan job is created.
+- **`--start-url`**: points crawling at a same-origin subpath instead
+  of the target's own root `/`, for an application mounted under a
+  base path the site root has no link into (e.g. `/DVWA/`) — see
+  [Applications mounted under a subpath](#applications-mounted-under-a-subpath---start-url).
 - **Detection coverage**: every enabled detector tests query, form,
   and path-parameter inputs alike. JSON request-body inputs are
   supported by the mutation engine but not yet discovered by the live
@@ -726,6 +730,38 @@ multi-step, OAuth/SSO, CAPTCHA, MFA), discovery will fail cleanly and
 
 **Known limitation**: there is no CLI command to create or edit an
 authentication profile — this is config-file-only today.
+
+### Applications mounted under a subpath (--start-url)
+
+By default a scan's crawl starts at the target's own root `/`. Some
+applications are instead mounted under a subpath the site root has no
+link into at all (e.g. `/DVWA/`) — `--start-url` (or config's
+`crawler.start_path`) points the crawl at that subpath instead, so the
+application's own in-app links are what get followed, exactly the
+same mechanism (`internal/crawler.Crawler.Crawl`'s own start-path
+parameter) every other crawl already uses, not a second crawler:
+
+```bash
+scanner scan 203.0.113.10 --profile web --auth-profile lab-login --start-url /DVWA/
+```
+
+This is independent of `login_url`/`start_url` on the authentication
+profile itself, which only controls where the *login* flow looks for
+a form — `--start-url` only affects where crawling begins. Once
+authentication succeeds, the crawl (starting from `--start-url` if
+given) carries that session to every same-origin request, so an
+application mounted under a subpath is reachable authenticated, not
+just unauthenticated. Works identically with `form_login` and
+`form_login_auto`.
+
+`--start-url` accepts either a bare path (`/DVWA/`, `DVWA/` — always
+same-origin by construction) or a full `http(s)://` URL, whose host
+must then match the scan target exactly; a mismatch is a pre-flight
+configuration error (no network activity, no scan job created),
+mirroring how an unknown `--auth-profile`/`--identity` is handled.
+`--start-url` never changes scope — every request the crawl makes,
+starting path or not, still passes the identical host-based scope
+check.
 
 ## IDENTITIES
 

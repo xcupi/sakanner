@@ -106,6 +106,13 @@ type CrawlerConfig struct {
 	Enabled  bool `mapstructure:"enabled"`
 	MaxDepth int  `mapstructure:"max_depth"`
 	MaxPages int  `mapstructure:"max_pages"`
+	// StartPath is the path (e.g. "/DVWA/") the crawler begins same-
+	// origin crawling from, instead of the target's own root "/" --
+	// general-purpose support for an application hosted under a
+	// subpath the site root has no link into. Overridable per-scan via
+	// "scanner scan <target> --start-url". Empty means the target's
+	// own root, unchanged from every prior phase's behavior.
+	StartPath string `mapstructure:"start_path"`
 }
 
 // ToolsConfig selects, per pluggable stage, which backend to use: ""/
